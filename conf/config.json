@@ -1,0 +1,8 @@
+{
+    "api-key": "123456",
+    "paymaster_address_v7": "0x1234567890123456789012345678901234567890",
+    "rate_limiter_qps": 1000,
+    "chain_id": 534351,
+    "signer_private_key": "8da4ef21b864d2cc526dbdb2a120bd2874c36c9d0a1fb7f8c63d7f7a8b41de8f",
+    "usdt_address": "0x5c084394b327b48a7e9886b98d6d595c9a83b5ed"
+}
