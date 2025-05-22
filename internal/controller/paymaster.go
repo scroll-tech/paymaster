@@ -51,9 +51,9 @@ type PaymasterController struct {
 
 // NewPaymasterController creates and initializes a new PaymasterController.
 func NewPaymasterController(cfg *config.Config) *PaymasterController {
-	if cfg.APIKey == "" {
-		log.Crit("API key is required")
-	}
+	//if cfg.APIKey == "" {
+	//	log.Crit("API key is required")
+	//}
 
 	privateKeyBytes, err := hex.DecodeString(cfg.SignerPrivateKey)
 	if err != nil {
