@@ -375,10 +375,7 @@ func (pc *PaymasterController) buildAndSignPaymasterData(userOp *types.Paymaster
 	)
 
 	// Hash user operation with paymaster data
-	hash, err := pc.getPaymasterDataHash(userOp, validUntil, validAfter, sponsorUUID, allowAnyBundler, precheckBalance, prepaymentRequired, tokenAddr, pc.cfg.PaymasterAddressV7, exchangeRate, postOpGas)
-	if err != nil {
-		return "", nil, nil, fmt.Errorf("failed to compute hash for paymaster data, userOp: %v, paymasterData: %x, error: %w", userOp, paymasterData, err)
-	}
+	hash := pc.getPaymasterDataHash(userOp, validUntil, validAfter, sponsorUUID, allowAnyBundler, precheckBalance, prepaymentRequired, tokenAddr, pc.cfg.PaymasterAddressV7, exchangeRate, postOpGas)
 
 	// Sign the hash
 	signature, err := pc.signHash(hash)
@@ -467,8 +464,8 @@ func (pc *PaymasterController) getPaymasterDataHash(userOp *types.PaymasterUserO
 	sponsorUUID *big.Int,
 	allowAnyBundler, precheckBalance, prepaymentRequired bool,
 	token, receiver common.Address,
-	exchangeRate, postOpGas *big.Int) ([]byte, error) {
-
+	exchangeRate, postOpGas *big.Int,
+) []byte {
 	var buffer []byte
 
 	// UserOp fields (8 * 32 bytes)
@@ -518,9 +515,9 @@ func (pc *PaymasterController) getPaymasterDataHash(userOp *types.PaymasterUserO
 
 	log.Debug("Packed data for hashing", "packedData", hexutil.Encode(buffer))
 
-	hash := crypto.Keccak256(buffer)
-	return hash, nil
+	return crypto.Keccak256(buffer)
 }
+
 func (pc *PaymasterController) signHash(hash []byte) ([]byte, error) {
 	if len(hash) != 32 {
 		return nil, fmt.Errorf("hash must be 32 bytes, got %d", len(hash))
