@@ -1,5 +1,5 @@
 {
-    "api-key": "123456",
+    "api_key": "123456",
     "paymaster_address_v7": "0x1234567890123456789012345678901234567890",
     "rate_limiter_qps": 1000,
     "chain_id": 534351,

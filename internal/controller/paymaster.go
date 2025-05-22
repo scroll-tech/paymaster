@@ -52,6 +52,10 @@ type PaymasterController struct {
 
 // NewPaymasterController creates and initializes a new PaymasterController.
 func NewPaymasterController(cfg *config.Config) *PaymasterController {
+	if cfg.APIKey == "" {
+		log.Crit("API key is required")
+	}
+
 	privateKeyBytes, err := hex.DecodeString(cfg.SignerPrivateKey)
 	if err != nil {
 		log.Crit("Failed to decode private key", "error", err)
@@ -78,17 +82,15 @@ func (pc *PaymasterController) Paymaster(c *gin.Context) {
 		return
 	}
 
-	if pc.cfg.APIKey != "" {
-		if req.APIKey == "" {
-			log.Debug("Unauthorized: API key missing from payload", "payload", req)
-			pc.sendError(c, req.ID, UnauthorizedErrorCode, "Unauthorized: API key required in payload")
-			return
-		}
-		if req.APIKey != pc.cfg.APIKey {
-			log.Debug("Unauthorized: Invalid API", "payload", req, "apiKey", pc.cfg.APIKey)
-			pc.sendError(c, req.ID, UnauthorizedErrorCode, "Unauthorized: Invalid API key")
-			return
-		}
+	if req.APIKey == "" {
+		log.Debug("Unauthorized: API key missing from payload", "payload", req)
+		pc.sendError(c, req.ID, UnauthorizedErrorCode, "Unauthorized: API key required in payload")
+		return
+	}
+	if req.APIKey != pc.cfg.APIKey {
+		log.Debug("Unauthorized: Invalid API", "payload", req, "apiKey", pc.cfg.APIKey)
+		pc.sendError(c, req.ID, UnauthorizedErrorCode, "Unauthorized: Invalid API key")
+		return
 	}
 
 	if req.JSONRPC != jsonRPCVersion {
