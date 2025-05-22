@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/scroll-tech/go-ethereum/accounts/abi"
 	"github.com/scroll-tech/go-ethereum/common"
 	"github.com/scroll-tech/go-ethereum/common/hexutil"
 	"github.com/scroll-tech/go-ethereum/crypto"
@@ -118,7 +117,7 @@ func (pc *PaymasterController) handleGetPaymasterStubData(c *gin.Context, req ty
 	}
 
 	// Generate signed paymaster data for stub
-	paymasterData, paymasterPostOpGasLimit, verificationGasLimit, err := pc.buildAndSignPaymasterData(params, tokenAddr)
+	paymasterData, verificationGasLimit, paymasterPostOpGasLimit, err := pc.buildAndSignPaymasterData(params, tokenAddr)
 	if err != nil {
 		log.Error("Failed to build and sign paymaster data for stub", "error", err)
 		pc.sendError(c, req.ID, PaymasterDataGenErrorCode, "Failed to generate paymaster data: "+err.Error())
@@ -352,17 +351,17 @@ func (pc *PaymasterController) buildAndSignPaymasterData(userOp *types.Paymaster
 	// Set default values for ETH
 	exchangeRate := big.NewInt(0)        // Zero for ETH
 	postOpGas := big.NewInt(20000)       // 20,000 gas for ETH
-	verificationGas := big.NewInt(50000) // 50,000 gas for ETH
+	verificationGas := big.NewInt(30000) // 30,000 gas for ETH
 
 	// If using USDT token
 	if tokenAddr != emptyAddr && !strings.EqualFold(tokenAddr.Hex(), pc.cfg.USDTAddress.Hex()) {
 		exchangeRate = pc.getETHUSDTExchangeRate() // Get exchange rate with 10% premium
 		postOpGas = big.NewInt(80000)              // 80,000 gas for token operations
-		verificationGas = big.NewInt(60000)        // 60,000 gas for token operations
+		verificationGas = big.NewInt(40000)        // 40,000 gas for token operations
 	}
 
 	// Pack paymaster data
-	paymasterData, err := pc.packPaymasterData(
+	paymasterData := pc.packPaymasterData(
 		validUntil,
 		validAfter,
 		sponsorUUID,
@@ -374,12 +373,9 @@ func (pc *PaymasterController) buildAndSignPaymasterData(userOp *types.Paymaster
 		exchangeRate,
 		postOpGas,
 	)
-	if err != nil {
-		return "", nil, nil, fmt.Errorf("failed to pack paymaster data: %w", err)
-	}
 
 	// Hash user operation with paymaster data
-	hash, err := pc.getPaymasterDataHash(userOp, paymasterData)
+	hash, err := pc.getPaymasterDataHash(userOp, validUntil, validAfter, sponsorUUID, allowAnyBundler, precheckBalance, prepaymentRequired, tokenAddr, pc.cfg.PaymasterAddressV7, exchangeRate, postOpGas)
 	if err != nil {
 		return "", nil, nil, fmt.Errorf("failed to compute hash for paymaster data, userOp: %v, paymasterData: %x, error: %w", userOp, paymasterData, err)
 	}
@@ -408,123 +404,149 @@ func (pc *PaymasterController) packPaymasterData(
 	receiver common.Address,
 	exchangeRate *big.Int,
 	postOpGas *big.Int,
-) ([]byte, error) {
-	// Initialize ABI encoder for PaymasterData struct
-	uint48Type, _ := abi.NewType("uint48", "", nil)
-	uint128Type, _ := abi.NewType("uint128", "", nil)
-	boolType, _ := abi.NewType("bool", "", nil)
-	addressType, _ := abi.NewType("address", "", nil)
-	uint256Type, _ := abi.NewType("uint256", "", nil)
+) []byte {
+	var buffer []byte
 
-	// Create encoder matching the PaymasterData struct format
-	paymasterDataEncoder := abi.Arguments{
-		{Type: uint48Type},  // validUntil
-		{Type: uint48Type},  // validAfter
-		{Type: uint128Type}, // sponsorUUID
-		{Type: boolType},    // allowAnyBundler
-		{Type: boolType},    // precheckBalance
-		{Type: boolType},    // prepaymentRequired
-		{Type: addressType}, // token
-		{Type: addressType}, // receiver
-		{Type: uint256Type}, // exchangeRate
-		{Type: uint48Type},  // postOpGas
+	// validUntil (6 bytes - uint48)
+	validUntilBytes := make([]byte, 6)
+	validUntil.FillBytes(validUntilBytes)
+	buffer = append(buffer, validUntilBytes...)
+
+	// validAfter (6 bytes - uint48)
+	validAfterBytes := make([]byte, 6)
+	validAfter.FillBytes(validAfterBytes)
+	buffer = append(buffer, validAfterBytes...)
+
+	// sponsorUUID (16 bytes - uint128)
+	sponsorUUIDBytes := make([]byte, 16)
+	sponsorUUID.FillBytes(sponsorUUIDBytes)
+	buffer = append(buffer, sponsorUUIDBytes...)
+
+	// allowAnyBundler (1 byte - bool)
+	if allowAnyBundler {
+		buffer = append(buffer, 1)
+	} else {
+		buffer = append(buffer, 0)
 	}
 
-	// Pack data using ABI encoder
-	packed, err := paymasterDataEncoder.Pack(
-		validUntil,
-		validAfter,
-		sponsorUUID,
-		allowAnyBundler,
-		precheckBalance,
-		prepaymentRequired,
-		token,
-		receiver,
-		exchangeRate,
-		postOpGas,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("failed to pack paymaster data: %w", err)
+	// precheckBalance (1 byte - bool)
+	if precheckBalance {
+		buffer = append(buffer, 1)
+	} else {
+		buffer = append(buffer, 0)
 	}
 
-	return packed, nil
+	// prepaymentRequired (1 byte - bool)
+	if prepaymentRequired {
+		buffer = append(buffer, 1)
+	} else {
+		buffer = append(buffer, 0)
+	}
+
+	// token (20 bytes - address)
+	buffer = append(buffer, token.Bytes()...)
+
+	// receiver (20 bytes - address)
+	buffer = append(buffer, receiver.Bytes()...)
+
+	// exchangeRate (32 bytes - uint256)
+	exchangeRateBytes := make([]byte, 32)
+	exchangeRate.FillBytes(exchangeRateBytes)
+	buffer = append(buffer, exchangeRateBytes...)
+
+	// postOpGas (6 bytes - uint48)
+	postOpGasBytes := make([]byte, 6)
+	postOpGas.FillBytes(postOpGasBytes)
+	buffer = append(buffer, postOpGasBytes...)
+
+	return buffer
 }
 
-// getPaymasterDataHash calculates hash for the paymaster data based on contract's getHash function
-func (pc *PaymasterController) getPaymasterDataHash(userOp *types.PaymasterUserOperationV7, paymasterData []byte) ([]byte, error) {
-	address, _ := abi.NewType("address", "", nil)
-	uint256, _ := abi.NewType("uint256", "", nil)
-	bytes32, _ := abi.NewType("bytes32", "", nil)
-	bytesType, _ := abi.NewType("bytes", "", nil)
+func (pc *PaymasterController) getPaymasterDataHash(userOp *types.PaymasterUserOperationV7,
+	validUntil, validAfter *big.Int,
+	sponsorUUID *big.Int,
+	allowAnyBundler, precheckBalance, prepaymentRequired bool,
+	token, receiver common.Address,
+	exchangeRate, postOpGas *big.Int) ([]byte, error) {
 
-	hashEncoder := abi.Arguments{
-		{Type: address},   // sender
-		{Type: uint256},   // nonce
-		{Type: bytes32},   // hashInitCode
-		{Type: bytes32},   // hashCallData
-		{Type: bytes32},   // accountGasLimits
-		{Type: uint256},   // preVerificationGas
-		{Type: bytes32},   // gasFees
-		{Type: uint256},   // chainId
-		{Type: address},   // paymaster address
-		{Type: bytesType}, // paymasterData
+	var buffer []byte
+
+	// UserOp fields (8 * 32 bytes)
+	buffer = append(buffer, common.LeftPadBytes(userOp.Sender.Bytes(), 32)...)
+	buffer = append(buffer, common.LeftPadBytes(userOp.Nonce.ToInt().Bytes(), 32)...)
+	buffer = append(buffer, crypto.Keccak256Hash(common.FromHex(userOp.InitCode)).Bytes()...)
+	buffer = append(buffer, crypto.Keccak256Hash(common.FromHex(userOp.CallData)).Bytes()...)
+
+	gasLimits := packGasLimits(userOp.VerificationGasLimit.ToInt(), userOp.CallGasLimit.ToInt())
+	buffer = append(buffer, gasLimits[:]...)
+
+	buffer = append(buffer, common.LeftPadBytes(userOp.PreVerificationGas.ToInt().Bytes(), 32)...)
+
+	gasFees := packGasLimits(userOp.MaxFeePerGas.ToInt(), userOp.MaxPriorityFeePerGas.ToInt())
+	buffer = append(buffer, gasFees[:]...)
+
+	buffer = append(buffer, common.LeftPadBytes(big.NewInt(pc.cfg.ChainID).Bytes(), 32)...)
+	buffer = append(buffer, common.LeftPadBytes(pc.cfg.PaymasterAddressV7.Bytes(), 32)...)
+
+	// PaymasterData fields (10 * 32 bytes)
+	buffer = append(buffer, common.LeftPadBytes(validUntil.Bytes(), 32)...)
+	buffer = append(buffer, common.LeftPadBytes(validAfter.Bytes(), 32)...)
+	buffer = append(buffer, common.LeftPadBytes(sponsorUUID.Bytes(), 32)...)
+
+	if allowAnyBundler {
+		buffer = append(buffer, common.LeftPadBytes([]byte{1}, 32)...)
+	} else {
+		buffer = append(buffer, common.LeftPadBytes([]byte{0}, 32)...)
 	}
 
-	packed, err := hashEncoder.Pack(
-		userOp.Sender,
-		userOp.Nonce.ToInt(),
-		crypto.Keccak256Hash(common.FromHex(userOp.InitCode)),
-		crypto.Keccak256Hash(common.FromHex(userOp.CallData)),
-		packGasLimits(userOp.VerificationGasLimit.ToInt(), userOp.CallGasLimit.ToInt()),
-		userOp.PreVerificationGas.ToInt(),
-		packGasLimits(userOp.MaxFeePerGas.ToInt(), userOp.MaxPriorityFeePerGas.ToInt()),
-		big.NewInt(pc.cfg.ChainID),
-		pc.cfg.PaymasterAddressV7,
-		paymasterData,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("failed to pack data using ABI encoder, userOp: %v, error: %w", userOp, err)
+	if precheckBalance {
+		buffer = append(buffer, common.LeftPadBytes([]byte{1}, 32)...)
+	} else {
+		buffer = append(buffer, common.LeftPadBytes([]byte{0}, 32)...)
 	}
 
-	log.Debug("Packed data for hashing", "packedData", hexutil.Encode(packed))
+	if prepaymentRequired {
+		buffer = append(buffer, common.LeftPadBytes([]byte{1}, 32)...)
+	} else {
+		buffer = append(buffer, common.LeftPadBytes([]byte{0}, 32)...)
+	}
 
-	hash := crypto.Keccak256(packed)
+	buffer = append(buffer, common.LeftPadBytes(token.Bytes(), 32)...)
+	buffer = append(buffer, common.LeftPadBytes(receiver.Bytes(), 32)...)
+	buffer = append(buffer, common.LeftPadBytes(exchangeRate.Bytes(), 32)...)
+	buffer = append(buffer, common.LeftPadBytes(postOpGas.Bytes(), 32)...)
+
+	log.Debug("Packed data for hashing", "packedData", hexutil.Encode(buffer))
+
+	hash := crypto.Keccak256(buffer)
 	return hash, nil
 }
-
-// signHash signs a hash using the controller's private key
 func (pc *PaymasterController) signHash(hash []byte) ([]byte, error) {
-	signature, err := crypto.Sign(hash, pc.signerKey)
+	if len(hash) != 32 {
+		return nil, fmt.Errorf("hash must be 32 bytes, got %d", len(hash))
+	}
+
+	prefix := "\x19Ethereum Signed Message:\n32"
+	fullMessage := append([]byte(prefix), hash...)
+	ethSignedHash := crypto.Keccak256(fullMessage)
+
+	signature, err := crypto.Sign(ethSignedHash, pc.signerKey)
 	if err != nil {
 		return nil, err
 	}
 
-	// Adjust V value for Ethereum compatibility
-	if len(signature) == 65 && (signature[64] == 0 || signature[64] == 1) {
-		signature[64] += 27 // Convert V from 0/1 to 27/28
+	if len(signature) != 65 {
+		return nil, fmt.Errorf("invalid signature length: got %d, expected 65", len(signature))
+	}
+
+	if signature[64] == 0 || signature[64] == 1 {
+		signature[64] += 27
 	}
 
 	return signature, nil
 }
 
-// padBigInt pads a big.Int to the specified length
-func padBigInt(num *big.Int, length int) []byte {
-	result := make([]byte, length)
-	bytes := num.Bytes()
-	copy(result[length-len(bytes):], bytes)
-	return result
-}
-
 func packGasLimits(high, low *big.Int) [32]byte {
-	// Shift high left by 128 bits
-	highShifted := new(big.Int).Lsh(high, 128)
-
-	// Combine high and low
-	combined := new(big.Int).Or(highShifted, low)
-
-	// Convert to bytes32 (fixed-size array)
-	var result [32]byte
-	bytes := padBigInt(combined, 32)
-	copy(result[:], bytes)
-	return result
+	combined := new(big.Int).Or(new(big.Int).Lsh(high, 128), low)
+	return [32]byte(common.LeftPadBytes(combined.Bytes(), 32))
 }
