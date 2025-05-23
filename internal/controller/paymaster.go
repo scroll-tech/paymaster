@@ -354,7 +354,7 @@ func (pc *PaymasterController) buildAndSignPaymasterData(userOp *types.Paymaster
 	verificationGas := big.NewInt(30000) // 30,000 gas for ETH
 
 	// If using USDT token
-	if tokenAddr != emptyAddr && !strings.EqualFold(tokenAddr.Hex(), pc.cfg.USDTAddress.Hex()) {
+	if tokenAddr != emptyAddr && strings.EqualFold(tokenAddr.Hex(), pc.cfg.USDTAddress.Hex()) {
 		exchangeRate = pc.getETHUSDTExchangeRate() // Get exchange rate with 10% premium
 		postOpGas = big.NewInt(80000)              // 80,000 gas for token operations
 		verificationGas = big.NewInt(40000)        // 40,000 gas for token operations
