@@ -243,8 +243,8 @@ func (pc *PaymasterController) parseERC7677Params(rawParams json.RawMessage) (*t
 	return userOp, tokenAddr, nil
 }
 
-// getETHUSDTExchangeRate fetches the current ETH/USDT exchange rate from Binance
-// and applies a 10% premium
+// getETHUSDTExchangeRate fetches the current ETH/USDT exchange rate from CoinGecko
+// by calculating (ETH/USD) / (USDT/USD) and applies a 10% premium
 func (pc *PaymasterController) getETHUSDTExchangeRate() *big.Int {
 	maxRetries := 3
 	var lastErr error
@@ -252,9 +252,10 @@ func (pc *PaymasterController) getETHUSDTExchangeRate() *big.Int {
 	for i := 0; i < maxRetries; i++ {
 		client := &http.Client{Timeout: 5 * time.Second}
 
-		resp, err := client.Get("https://api.binance.com/api/v3/ticker/price?symbol=ETHUSDT")
+		// Get both ETH/USD and USDT/USD rates
+		resp, err := client.Get("https://api.coingecko.com/api/v3/simple/price?ids=ethereum,tether&vs_currencies=usd")
 		if err != nil {
-			log.Error("Failed to fetch ETH/USDT price", "attempt", i+1, "error", err)
+			log.Error("Failed to fetch ETH and USDT prices", "attempt", i+1, "error", err)
 			lastErr = err
 			if i < maxRetries-1 {
 				time.Sleep(1 * time.Second)
@@ -278,12 +279,16 @@ func (pc *PaymasterController) getETHUSDTExchangeRate() *big.Int {
 			continue
 		}
 
-		type tickerResponse struct {
-			Symbol string `json:"symbol"`
-			Price  string `json:"price"`
+		type coinGeckoResponse struct {
+			Ethereum struct {
+				USD float64 `json:"usd"`
+			} `json:"ethereum"`
+			Tether struct {
+				USD float64 `json:"usd"`
+			} `json:"tether"`
 		}
 
-		var response tickerResponse
+		var response coinGeckoResponse
 		if err = json.Unmarshal(body, &response); err != nil {
 			log.Error("Failed to parse JSON response", "attempt", i+1, "error", err)
 			lastErr = err
@@ -293,9 +298,9 @@ func (pc *PaymasterController) getETHUSDTExchangeRate() *big.Int {
 			continue
 		}
 
-		if response.Symbol != "ETHUSDT" {
-			err = fmt.Errorf("unexpected symbol: %s", response.Symbol)
-			log.Error("Unexpected symbol in response", "attempt", i+1, "symbol", response.Symbol)
+		if response.Ethereum.USD == 0 || response.Tether.USD == 0 {
+			err = fmt.Errorf("invalid prices: ETH=%f, USDT=%f", response.Ethereum.USD, response.Tether.USD)
+			log.Error("Invalid prices in response", "attempt", i+1, "eth_price", response.Ethereum.USD, "usdt_price", response.Tether.USD)
 			lastErr = err
 			if i < maxRetries-1 {
 				time.Sleep(1 * time.Second)
@@ -303,23 +308,17 @@ func (pc *PaymasterController) getETHUSDTExchangeRate() *big.Int {
 			continue
 		}
 
-		price, success := new(big.Float).SetString(response.Price)
-		if !success {
-			err = fmt.Errorf("failed to parse price: %s", response.Price)
-			log.Error("Failed to convert price to big.Float", "attempt", i+1, "price", response.Price)
-			lastErr = err
-			if i < maxRetries-1 {
-				time.Sleep(1 * time.Second)
-			}
-			continue
-		}
+		// Calculate ETH/USDT = ETH/USD ÷ USDT/USD
+		ethUSD := big.NewFloat(response.Ethereum.USD)
+		usdtUSD := big.NewFloat(response.Tether.USD)
+		ethUSDT := new(big.Float).Quo(ethUSD, usdtUSD)
 
 		// Apply 10% premium
-		price = new(big.Float).Mul(price, big.NewFloat(1.1))
+		price := new(big.Float).Mul(ethUSDT, big.NewFloat(1.1))
 		priceWithDecimals := new(big.Float).Mul(price, big.NewFloat(1000000))
 		result, _ := priceWithDecimals.Int(nil)
 
-		log.Debug("Fetched ETH/USDT exchange rate with 10% premium", "attempt", i+1, "base_rate", response.Price, "with_premium", result.String())
+		log.Debug("Fetched ETH/USDT exchange rate with 10% premium", "attempt", i+1, "eth_usd", response.Ethereum.USD, "usdt_usd", response.Tether.USD, "eth_usdt", ethUSDT.String(), "with_premium", result.String())
 
 		// Success, return immediately
 		return result
