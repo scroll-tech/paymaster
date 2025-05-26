@@ -350,13 +350,13 @@ func (pc *PaymasterController) buildAndSignPaymasterData(userOp *types.Paymaster
 	// Set default values for ETH
 	exchangeRate := big.NewInt(0) // Zero for ETH
 	postOpGas := big.NewInt(5000)
-	verificationGas := big.NewInt(20000)
+	verificationGas := big.NewInt(25000)
 
 	// If using USDT token
 	if tokenAddr != emptyAddr && strings.EqualFold(tokenAddr.Hex(), pc.cfg.USDTAddress.Hex()) {
 		exchangeRate = pc.getETHUSDTExchangeRate() // Get exchange rate with 10% premium
 		postOpGas = big.NewInt(40000)
-		verificationGas = big.NewInt(25000)
+		verificationGas = big.NewInt(30000)
 	}
 
 	// Pack paymaster data
