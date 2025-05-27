@@ -37,7 +37,10 @@ func action(ctx *cli.Context) error {
 	srv := &http.Server{
 		Addr:              fmt.Sprintf(":%s", port),
 		Handler:           router,
-		ReadHeaderTimeout: time.Minute,
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       15 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       60 * time.Second,
 	}
 
 	go func() {
