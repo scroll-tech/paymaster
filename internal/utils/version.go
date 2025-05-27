@@ -23,5 +23,5 @@ var commit = func() string {
 	return "000000"
 }()
 
-// Version denote the version of paymaster.
+// Version denotes the version of paymaster.
 var Version = fmt.Sprintf("%s-%s", tag, commit)
