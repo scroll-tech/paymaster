@@ -22,21 +22,6 @@ import (
 
 // Constants for RPC Errors (as per JSON-RPC 2.0 spec and EIP-1474)
 const (
-	jsonRPCVersion = "2.0"
-
-	// JSON-RPC Standard Errors
-	ParseErrorCode     = -32700
-	InvalidRequestCode = -32600
-	MethodNotFoundCode = -32601
-	InvalidParamsCode  = -32602
-
-	// Custom Paymaster Errors
-	UnauthorizedErrorCode     = -32000
-	UnsupportedChainIDCode    = -32001
-	UnsupportedEntryPointCode = -32002
-	PaymasterDataGenErrorCode = -32003
-	UnsupportedTokenErrorCode = -32004
-
 	entryPointV7Address = "0x0000000071727De22E5E9d8BAf0edAc6f37da032"
 )
 
@@ -77,23 +62,12 @@ func NewPaymasterController(cfg *config.Config) *PaymasterController {
 func (pc *PaymasterController) Paymaster(c *gin.Context) {
 	var req types.PaymasterJSONRPCRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		pc.sendError(c, nil, ParseErrorCode, "Parse error")
+		types.SendError(c, nil, types.ParseErrorCode, "Parse error")
 		return
 	}
 
-	if req.APIKey == "" {
-		log.Debug("Unauthorized: API key missing from payload", "payload", req)
-		pc.sendError(c, req.ID, UnauthorizedErrorCode, "Unauthorized: API key required in payload")
-		return
-	}
-	if req.APIKey != pc.cfg.APIKey {
-		log.Debug("Unauthorized: Invalid API", "payload", req, "apiKey", pc.cfg.APIKey)
-		pc.sendError(c, req.ID, UnauthorizedErrorCode, "Unauthorized: Invalid API key")
-		return
-	}
-
-	if req.JSONRPC != jsonRPCVersion {
-		pc.sendError(c, req.ID, InvalidRequestCode, "Invalid JSON-RPC version")
+	if req.JSONRPC != types.JSONRPCVersion {
+		types.SendError(c, req.ID, types.InvalidRequestCode, "Invalid JSON-RPC version")
 		return
 	}
 
@@ -104,7 +78,7 @@ func (pc *PaymasterController) Paymaster(c *gin.Context) {
 		pc.handleGetPaymasterData(c, req)
 	default:
 		log.Debug("Method not found", "method", req.Method)
-		pc.sendError(c, req.ID, MethodNotFoundCode, "Method not found: "+req.Method)
+		types.SendError(c, req.ID, types.MethodNotFoundCode, "Method not found: "+req.Method)
 	}
 }
 
@@ -112,7 +86,7 @@ func (pc *PaymasterController) Paymaster(c *gin.Context) {
 func (pc *PaymasterController) handleGetPaymasterStubData(c *gin.Context, req types.PaymasterJSONRPCRequest) {
 	params, tokenAddr, rpcErr := pc.parseERC7677Params(req.Params)
 	if rpcErr != nil {
-		pc.sendError(c, req.ID, rpcErr.Code, rpcErr.Message)
+		types.SendError(c, req.ID, rpcErr.Code, rpcErr.Message)
 		return
 	}
 
@@ -120,7 +94,7 @@ func (pc *PaymasterController) handleGetPaymasterStubData(c *gin.Context, req ty
 	paymasterData, verificationGasLimit, paymasterPostOpGasLimit, err := pc.buildAndSignPaymasterData(params, tokenAddr)
 	if err != nil {
 		log.Error("Failed to build and sign paymaster data for stub", "error", err)
-		pc.sendError(c, req.ID, PaymasterDataGenErrorCode, "Failed to generate paymaster data: "+err.Error())
+		types.SendError(c, req.ID, types.PaymasterDataGenErrorCode, "Failed to generate paymaster data: "+err.Error())
 		return
 	}
 
@@ -132,14 +106,14 @@ func (pc *PaymasterController) handleGetPaymasterStubData(c *gin.Context, req ty
 	}
 
 	log.Debug("Return stub data", "result", stubResult)
-	pc.sendSuccess(c, req.ID, stubResult)
+	types.SendSuccess(c, req.ID, stubResult)
 }
 
 // handleGetPaymasterData implements the logic for pm_getPaymasterData.
 func (pc *PaymasterController) handleGetPaymasterData(c *gin.Context, req types.PaymasterJSONRPCRequest) {
 	params, tokenAddr, rpcErr := pc.parseERC7677Params(req.Params)
 	if rpcErr != nil {
-		pc.sendError(c, req.ID, rpcErr.Code, rpcErr.Message)
+		types.SendError(c, req.ID, rpcErr.Code, rpcErr.Message)
 		return
 	}
 
@@ -147,7 +121,7 @@ func (pc *PaymasterController) handleGetPaymasterData(c *gin.Context, req types.
 	paymasterData, _, _, err := pc.buildAndSignPaymasterData(params, tokenAddr)
 	if err != nil {
 		log.Error("Failed to build and sign paymaster data", "error", err)
-		pc.sendError(c, req.ID, PaymasterDataGenErrorCode, "Failed to generate paymaster data: "+err.Error())
+		types.SendError(c, req.ID, types.PaymasterDataGenErrorCode, "Failed to generate paymaster data: "+err.Error())
 		return
 	}
 
@@ -157,65 +131,48 @@ func (pc *PaymasterController) handleGetPaymasterData(c *gin.Context, req types.
 	}
 
 	log.Debug("Return final paymaster data", "result", result)
-	pc.sendSuccess(c, req.ID, result)
-}
-
-func (pc *PaymasterController) sendError(c *gin.Context, id interface{}, code int, message string) {
-	errResp := types.RPCError{Code: code, Message: message}
-	c.JSON(http.StatusOK, types.PaymasterJSONRPCResponse{
-		JSONRPC: jsonRPCVersion,
-		ID:      id,
-		Error:   &errResp,
-	})
-}
-
-func (pc *PaymasterController) sendSuccess(c *gin.Context, id interface{}, result interface{}) {
-	c.JSON(http.StatusOK, types.PaymasterJSONRPCResponse{
-		JSONRPC: jsonRPCVersion,
-		ID:      id,
-		Result:  result,
-	})
+	types.SendSuccess(c, req.ID, result)
 }
 
 func (pc *PaymasterController) parseERC7677Params(rawParams json.RawMessage) (*types.PaymasterUserOperationV7, common.Address, *types.RPCError) {
 	var p []json.RawMessage
 	if err := json.Unmarshal(rawParams, &p); err != nil || len(p) != 4 { // Need exactly 4 elements for ERC-7677
 		log.Debug("Invalid params structure", "params", string(rawParams), "error", err, "length", len(p))
-		return nil, common.Address{}, &types.RPCError{Code: InvalidParamsCode, Message: "Invalid params structure: expected an array of exactly 4 elements including context"}
+		return nil, common.Address{}, &types.RPCError{Code: types.InvalidParamsCode, Message: "Invalid params structure: expected an array of exactly 4 elements including context"}
 	}
 
 	var userOp *types.PaymasterUserOperationV7
 	if err := json.Unmarshal(p[0], &userOp); err != nil {
 		log.Debug("Invalid userOp param", "userOp", string(p[0]), "error", err)
-		return nil, common.Address{}, &types.RPCError{Code: InvalidParamsCode, Message: "Invalid userOp param"}
+		return nil, common.Address{}, &types.RPCError{Code: types.InvalidParamsCode, Message: "Invalid userOp param"}
 	}
 
 	var entryPoint string
 	if err := json.Unmarshal(p[1], &entryPoint); err != nil {
 		log.Debug("Invalid entryPoint param", "entryPoint", entryPoint, "error", err)
-		return nil, common.Address{}, &types.RPCError{Code: InvalidParamsCode, Message: "Invalid entryPoint param"}
+		return nil, common.Address{}, &types.RPCError{Code: types.InvalidParamsCode, Message: "Invalid entryPoint param"}
 	}
 
 	if !strings.EqualFold(entryPoint, entryPointV7Address) {
 		log.Debug("Unsupported EntryPoint version", "entryPoint", entryPoint, "expected", entryPointV7Address)
-		return nil, common.Address{}, &types.RPCError{Code: UnsupportedEntryPointCode, Message: "Unsupported EntryPoint version. Only v0.7 is supported (" + entryPointV7Address + ")."}
+		return nil, common.Address{}, &types.RPCError{Code: types.UnsupportedEntryPointCode, Message: "Unsupported EntryPoint version. Only v0.7 is supported (" + entryPointV7Address + ")."}
 	}
 
 	var chainIDStr string
 	if err := json.Unmarshal(p[2], &chainIDStr); err != nil {
 		log.Debug("Invalid chainId param", "chainId", string(p[2]), "error", err)
-		return nil, common.Address{}, &types.RPCError{Code: InvalidParamsCode, Message: "Invalid chainId param"}
+		return nil, common.Address{}, &types.RPCError{Code: types.InvalidParamsCode, Message: "Invalid chainId param"}
 	}
 
 	inputChainID, success := new(big.Int).SetString(strings.TrimPrefix(chainIDStr, "0x"), 16)
 	if !success {
 		log.Debug("Failed to parse chainId", "chainId", chainIDStr)
-		return nil, common.Address{}, &types.RPCError{Code: InvalidParamsCode, Message: "Invalid chainId format"}
+		return nil, common.Address{}, &types.RPCError{Code: types.InvalidParamsCode, Message: "Invalid chainId format"}
 	}
 
 	if inputChainID.Cmp(big.NewInt(pc.cfg.ChainID)) != 0 {
 		log.Debug("Unsupported chainId", "chainId", inputChainID.String(), "expected", pc.cfg.ChainID)
-		return nil, common.Address{}, &types.RPCError{Code: UnsupportedChainIDCode, Message: "Unsupported chainId. Only " + fmt.Sprint(pc.cfg.ChainID) + " is supported."}
+		return nil, common.Address{}, &types.RPCError{Code: types.UnsupportedChainIDCode, Message: "Unsupported chainId. Only " + fmt.Sprint(pc.cfg.ChainID) + " is supported."}
 	}
 
 	type ERC7677Context struct {
@@ -225,7 +182,7 @@ func (pc *PaymasterController) parseERC7677Params(rawParams json.RawMessage) (*t
 	var context *ERC7677Context
 	if err := json.Unmarshal(p[3], &context); err != nil {
 		log.Debug("Invalid context param", "context", string(p[3]), "error", err)
-		return nil, common.Address{}, &types.RPCError{Code: InvalidParamsCode, Message: "Invalid context param"}
+		return nil, common.Address{}, &types.RPCError{Code: types.InvalidParamsCode, Message: "Invalid context param"}
 	}
 
 	// Return the result of ETH payment
@@ -236,7 +193,7 @@ func (pc *PaymasterController) parseERC7677Params(rawParams json.RawMessage) (*t
 	tokenAddr := common.HexToAddress(context.Token)
 	if tokenAddr != emptyAddr && !strings.EqualFold(tokenAddr.Hex(), pc.cfg.USDTAddress.Hex()) {
 		log.Debug("Unsupported token", "provided", tokenAddr.Hex(), "expected", pc.cfg.USDTAddress.Hex())
-		return nil, common.Address{}, &types.RPCError{Code: UnsupportedTokenErrorCode, Message: "Unsupported token. Only " + pc.cfg.USDTAddress.Hex() + " is supported."}
+		return nil, common.Address{}, &types.RPCError{Code: types.UnsupportedTokenErrorCode, Message: "Unsupported token. Only " + pc.cfg.USDTAddress.Hex() + " is supported."}
 	}
 
 	// Return the token address

@@ -33,5 +33,5 @@ func Route(router *gin.Engine, conf *config.Config) {
 }
 
 func registerRootRoutes(rootGroup *gin.RouterGroup, conf *config.Config) {
-	rootGroup.POST("/", middleware.RateLimiter(conf), controller.PaymasterCtl.Paymaster)
+	rootGroup.POST("/", middleware.AuthMiddleware(conf), middleware.RateLimiter(conf), controller.PaymasterCtl.Paymaster)
 }
