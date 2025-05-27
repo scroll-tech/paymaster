@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"bytes"
 	"crypto/ecdsa"
 	"encoding/hex"
 	"encoding/json"
@@ -200,9 +201,106 @@ func (pc *PaymasterController) parseERC7677Params(rawParams json.RawMessage) (*t
 	return userOp, tokenAddr, nil
 }
 
-// getETHUSDTExchangeRate fetches the current ETH/USDT exchange rate from CoinGecko
-// by calculating (ETH/USD) / (USDT/USD) and applies a 10% premium
+// getETHUSDTExchangeRate fetches ETH/USDT prices from multiple sources and calculates average with a 10% premium.
 func (pc *PaymasterController) getETHUSDTExchangeRate() *big.Int {
+	var prices []*big.Float
+
+	// 1. Get Chainlink price
+	if chainlinkPrice := pc.getChainlinkPrice(); chainlinkPrice != nil {
+		prices = append(prices, chainlinkPrice)
+		log.Debug("Got Chainlink price", "price", chainlinkPrice.String())
+	}
+
+	// 2. Get Coinbase price
+	if coinbasePrice := pc.getCoinbasePrice(); coinbasePrice != nil {
+		prices = append(prices, coinbasePrice)
+		log.Debug("Got Coinbase price", "price", coinbasePrice.String())
+	}
+
+	// 3. Get CoinGecko price
+	if coinGeckoPrice := pc.getCoinGeckoPrice(); coinGeckoPrice != nil {
+		prices = append(prices, coinGeckoPrice)
+		log.Debug("Got CoinGecko price", "price", coinGeckoPrice.String())
+	}
+
+	// Must have at least 2 prices
+	if len(prices) < 2 {
+		log.Error("Need at least 2 price sources", "available", len(prices))
+		defaultRate := big.NewInt(3300000000) // 3300 USDT per ETH with 6 decimals (3000 + 10% premium)
+		log.Warn("Using fallback value", "fallbackRate", "3300 USDT/ETH")
+		return defaultRate
+	}
+
+	// Check price differences (max 10% variance)
+	if !pc.validatePriceVariance(prices, 0.10) {
+		log.Error("Price variance exceeds 10%, rejecting prices")
+		defaultRate := big.NewInt(3300000000)
+		log.Warn("Using fallback value due to price variance", "fallbackRate", "3300 USDT/ETH")
+		return defaultRate
+	}
+
+	// Calculate average
+	sum := big.NewFloat(0)
+	for _, price := range prices {
+		sum.Add(sum, price)
+	}
+
+	avgPrice := new(big.Float).Quo(sum, big.NewFloat(float64(len(prices))))
+
+	// Apply 10% premium
+	priceWithPremium := new(big.Float).Mul(avgPrice, big.NewFloat(1.1))
+
+	// Convert to 6 decimals (USDT format)
+	priceWithDecimals := new(big.Float).Mul(priceWithPremium, big.NewFloat(1000000))
+	result, _ := priceWithDecimals.Int(nil)
+
+	log.Debug("Calculated average ETH/USDT price with premium", "sources", len(prices), "average", avgPrice.String(), "with_premium", result.String())
+
+	return result
+}
+
+// validatePriceVariance checks if all prices are within the specified variance threshold
+func (pc *PaymasterController) validatePriceVariance(prices []*big.Float, maxVariance float64) bool {
+	if len(prices) < 2 {
+		return false
+	}
+
+	// Find min and max prices
+	min := new(big.Float).Set(prices[0])
+	max := new(big.Float).Set(prices[0])
+
+	for _, price := range prices[1:] {
+		if price.Cmp(min) < 0 {
+			min.Set(price)
+		}
+		if price.Cmp(max) > 0 {
+			max.Set(price)
+		}
+	}
+
+	// Check for zero or negative prices
+	if min.Sign() <= 0 {
+		log.Error("Invalid price detected", "min", min.String())
+		return false
+	}
+
+	// Calculate variance using multiplication to avoid division by zero
+	// Original: (max - min) / min <= maxVariance
+	// Equivalent: max - min <= maxVariance * min
+
+	diff := new(big.Float).Sub(max, min)
+	threshold := new(big.Float).Mul(min, big.NewFloat(maxVariance))
+
+	// Check if diff <= threshold
+	withinVariance := diff.Cmp(threshold) <= 0
+
+	log.Debug("Price variance check", "min", min.String(), "max", max.String(), "diff", diff.String(), "threshold", threshold.String(), "max_variance", fmt.Sprintf("%.2f%%", maxVariance*100), "within_variance", withinVariance)
+
+	return withinVariance
+}
+
+// getCoinGeckoPrice fetches ETH/USDT price from CoinGecko with retry logic
+func (pc *PaymasterController) getCoinGeckoPrice() *big.Float {
 	maxRetries := 3
 	var lastErr error
 
@@ -212,7 +310,7 @@ func (pc *PaymasterController) getETHUSDTExchangeRate() *big.Int {
 		// Get both ETH/USD and USDT/USD rates
 		resp, err := client.Get("https://api.coingecko.com/api/v3/simple/price?ids=ethereum,tether&vs_currencies=usd")
 		if err != nil {
-			log.Error("Failed to fetch ETH and USDT prices", "attempt", i+1, "error", err)
+			log.Error("Failed to fetch ETH and USDT prices from CoinGecko", "attempt", i+1, "error", err)
 			lastErr = err
 			if i < maxRetries-1 {
 				time.Sleep(1 * time.Second)
@@ -228,7 +326,7 @@ func (pc *PaymasterController) getETHUSDTExchangeRate() *big.Int {
 		}
 
 		if err != nil {
-			log.Error("Failed to read response body", "attempt", i+1, "error", err)
+			log.Error("Failed to read CoinGecko response body", "attempt", i+1, "error", err)
 			lastErr = err
 			if i < maxRetries-1 {
 				time.Sleep(1 * time.Second)
@@ -247,7 +345,7 @@ func (pc *PaymasterController) getETHUSDTExchangeRate() *big.Int {
 
 		var response coinGeckoResponse
 		if err = json.Unmarshal(body, &response); err != nil {
-			log.Error("Failed to parse JSON response", "attempt", i+1, "error", err)
+			log.Error("Failed to parse CoinGecko JSON response", "attempt", i+1, "error", err)
 			lastErr = err
 			if i < maxRetries-1 {
 				time.Sleep(1 * time.Second)
@@ -257,7 +355,7 @@ func (pc *PaymasterController) getETHUSDTExchangeRate() *big.Int {
 
 		if response.Ethereum.USD == 0 || response.Tether.USD == 0 {
 			err = fmt.Errorf("invalid prices: ETH=%f, USDT=%f", response.Ethereum.USD, response.Tether.USD)
-			log.Error("Invalid prices in response", "attempt", i+1, "eth_price", response.Ethereum.USD, "usdt_price", response.Tether.USD)
+			log.Error("Invalid prices in CoinGecko response", "attempt", i+1, "eth_price", response.Ethereum.USD, "usdt_price", response.Tether.USD)
 			lastErr = err
 			if i < maxRetries-1 {
 				time.Sleep(1 * time.Second)
@@ -270,21 +368,236 @@ func (pc *PaymasterController) getETHUSDTExchangeRate() *big.Int {
 		usdtUSD := big.NewFloat(response.Tether.USD)
 		ethUSDT := new(big.Float).Quo(ethUSD, usdtUSD)
 
-		// Apply 10% premium
-		price := new(big.Float).Mul(ethUSDT, big.NewFloat(1.1))
-		priceWithDecimals := new(big.Float).Mul(price, big.NewFloat(1000000))
-		result, _ := priceWithDecimals.Int(nil)
+		log.Debug("CoinGecko ETH/USDT calculated", "attempt", i+1, "eth_usd", response.Ethereum.USD, "usdt_usd", response.Tether.USD, "eth_usdt", ethUSDT.String())
 
-		log.Debug("Fetched ETH/USDT exchange rate with 10% premium", "attempt", i+1, "eth_usd", response.Ethereum.USD, "usdt_usd", response.Tether.USD, "eth_usdt", ethUSDT.String(), "with_premium", result.String())
-
-		// Success, return immediately
-		return result
+		return ethUSDT
 	}
 
-	// If all retries failed, use a default value
-	defaultRate := big.NewInt(3300000000) // 3300 USDT per ETH with 6 decimals (3000 + 10% premium)
-	log.Warn("All attempts to get exchange rate failed, using fallback value", "fallbackRate", "3300 USDT/ETH", "error", lastErr)
-	return defaultRate
+	log.Error("All CoinGecko attempts failed", "error", lastErr)
+	return nil
+}
+
+// getCoinbasePrice fetches ETH/USDT price from Coinbase with retry logic
+func (pc *PaymasterController) getCoinbasePrice() *big.Float {
+	maxRetries := 3
+	var lastErr error
+
+	for i := 0; i < maxRetries; i++ {
+		client := &http.Client{Timeout: 5 * time.Second}
+		resp, err := client.Get("https://api.exchange.coinbase.com/products/ETH-USDT/ticker")
+		if err != nil {
+			log.Error("Failed to fetch Coinbase price", "attempt", i+1, "error", err)
+			lastErr = err
+			if i < maxRetries-1 {
+				time.Sleep(1 * time.Second)
+			}
+			continue
+		}
+
+		body, err := io.ReadAll(resp.Body)
+		closeErr := resp.Body.Close()
+
+		if closeErr != nil {
+			log.Warn("Failed to close Coinbase response body", "attempt", i+1, "error", closeErr)
+		}
+
+		if err != nil {
+			log.Error("Failed to read Coinbase response", "attempt", i+1, "error", err)
+			lastErr = err
+			if i < maxRetries-1 {
+				time.Sleep(1 * time.Second)
+			}
+			continue
+		}
+
+		var ticker struct {
+			Price string `json:"price"`
+		}
+
+		if err = json.Unmarshal(body, &ticker); err != nil {
+			log.Error("Failed to parse Coinbase response", "attempt", i+1, "error", err)
+			lastErr = err
+			if i < maxRetries-1 {
+				time.Sleep(1 * time.Second)
+			}
+			continue
+		}
+
+		price, ok := new(big.Float).SetString(ticker.Price)
+		if !ok {
+			err = fmt.Errorf("invalid price format: %s", ticker.Price)
+			log.Error("Invalid Coinbase price format", "attempt", i+1, "price", ticker.Price)
+			lastErr = err
+			if i < maxRetries-1 {
+				time.Sleep(1 * time.Second)
+			}
+			continue
+		}
+
+		if price.Sign() <= 0 {
+			err = fmt.Errorf("invalid price value: %s", price.String())
+			log.Error("Invalid Coinbase price value", "attempt", i+1, "price", price.String())
+			lastErr = err
+			if i < maxRetries-1 {
+				time.Sleep(1 * time.Second)
+			}
+			continue
+		}
+
+		log.Debug("Coinbase ETH/USDT price", "attempt", i+1, "price", price.String())
+		return price
+	}
+
+	log.Error("All Coinbase attempts failed", "error", lastErr)
+	return nil
+}
+
+// getChainlinkPrice fetches USDT/ETH price from Chainlink and converts to ETH/USDT
+func (pc *PaymasterController) getChainlinkPrice() *big.Float {
+	maxRetries := 3
+	var lastErr error
+
+	// USDT/ETH Price Feed address in Ethereum mainnet
+	aggregatorAddress := "0xEe9F2375b4bdF6387aa8265dD4FB8F16512A1d46"
+
+	for i := 0; i < maxRetries; i++ {
+		// latestAnswer() function selector
+		functionSelector := "0x50d25bcd"
+
+		client := &http.Client{Timeout: 5 * time.Second}
+
+		payload := map[string]interface{}{
+			"jsonrpc": "2.0",
+			"method":  "eth_call",
+			"params": []interface{}{
+				map[string]string{
+					"to":   aggregatorAddress,
+					"data": functionSelector,
+				},
+				"latest",
+			},
+			"id": 1,
+		}
+
+		jsonData, err := json.Marshal(payload)
+		if err != nil {
+			log.Error("Failed to marshal Chainlink request", "attempt", i+1, "error", err)
+			lastErr = err
+			if i < maxRetries-1 {
+				time.Sleep(1 * time.Second)
+			}
+			continue
+		}
+
+		resp, err := client.Post(pc.cfg.EthereumRPCURL, "application/json", bytes.NewBuffer(jsonData))
+		if err != nil {
+			log.Error("Failed to call Chainlink aggregator", "attempt", i+1, "error", err)
+			lastErr = err
+			if i < maxRetries-1 {
+				time.Sleep(1 * time.Second)
+			}
+			continue
+		}
+
+		body, err := io.ReadAll(resp.Body)
+		closeErr := resp.Body.Close()
+
+		if closeErr != nil {
+			log.Warn("Failed to close Chainlink response body", "attempt", i+1, "error", closeErr)
+		}
+
+		if err != nil {
+			log.Error("Failed to read Chainlink response", "attempt", i+1, "error", err)
+			lastErr = err
+			if i < maxRetries-1 {
+				time.Sleep(1 * time.Second)
+			}
+			continue
+		}
+
+		var rpcResponse struct {
+			Result string `json:"result"`
+			Error  *struct {
+				Code    int    `json:"code"`
+				Message string `json:"message"`
+			} `json:"error"`
+		}
+
+		if err = json.Unmarshal(body, &rpcResponse); err != nil {
+			log.Error("Failed to parse Chainlink response", "attempt", i+1, "error", err)
+			lastErr = err
+			if i < maxRetries-1 {
+				time.Sleep(1 * time.Second)
+			}
+			continue
+		}
+
+		if rpcResponse.Error != nil {
+			err = fmt.Errorf("RPC error: %s", rpcResponse.Error.Message)
+			log.Error("Chainlink RPC error", "attempt", i+1, "error", err)
+			lastErr = err
+			if i < maxRetries-1 {
+				time.Sleep(1 * time.Second)
+			}
+			continue
+		}
+
+		// Validate response format
+		if len(rpcResponse.Result) < 66 { // 0x + 64 hex chars
+			err = fmt.Errorf("invalid response length: %d", len(rpcResponse.Result))
+			log.Error("Invalid Chainlink response length", "attempt", i+1, "result", rpcResponse.Result)
+			lastErr = err
+			if i < maxRetries-1 {
+				time.Sleep(1 * time.Second)
+			}
+			continue
+		}
+
+		answerHex := rpcResponse.Result[2:] // Skip "0x" prefix
+		answer, ok := new(big.Int).SetString(answerHex, 16)
+		if !ok {
+			err = fmt.Errorf("failed to parse hex: %s", answerHex)
+			log.Error("Failed to parse Chainlink answer hex", "attempt", i+1, "hex", answerHex)
+			lastErr = err
+			if i < maxRetries-1 {
+				time.Sleep(1 * time.Second)
+			}
+			continue
+		}
+
+		if answer.Sign() <= 0 {
+			err = fmt.Errorf("invalid answer: %s", answer.String())
+			log.Error("Invalid USDT/ETH price from Chainlink", "attempt", i+1, "answer", answer.String())
+			lastErr = err
+			if i < maxRetries-1 {
+				time.Sleep(1 * time.Second)
+			}
+			continue
+		}
+
+		// Convert USDT/ETH to float
+		usdtPerEth := new(big.Float).SetInt(answer)
+		divisor := new(big.Float).SetInt(new(big.Int).Exp(big.NewInt(10), big.NewInt(18), nil))
+		usdtPerEth.Quo(usdtPerEth, divisor)
+
+		// Convert to ETH/USDT = 1 / (USDT/ETH)
+		if usdtPerEth.Sign() <= 0 {
+			err = fmt.Errorf("invalid USDT/ETH price: %s", usdtPerEth.String())
+			log.Error("Invalid USDT/ETH price calculated", "attempt", i+1, "price", usdtPerEth.String())
+			lastErr = err
+			if i < maxRetries-1 {
+				time.Sleep(1 * time.Second)
+			}
+			continue
+		}
+
+		ethPerUsdt := new(big.Float).Quo(big.NewFloat(1.0), usdtPerEth)
+		log.Debug("Chainlink ETH/USDT price", "attempt", i+1, "usdt_per_eth", usdtPerEth.String(), "eth_per_usdt", ethPerUsdt.String())
+		return ethPerUsdt
+	}
+
+	log.Error("All Chainlink attempts failed", "error", lastErr)
+	return nil
 }
 
 // buildAndSignPaymasterData builds and signs paymaster data
