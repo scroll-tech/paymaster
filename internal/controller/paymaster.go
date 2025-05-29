@@ -228,7 +228,7 @@ func (pc *PaymasterController) getChainlinkPrice() (*big.Float, error) {
 	for i, rpcURL := range pc.cfg.EthereumRPCURLs {
 		log.Debug("Trying RPC endpoint", "index", i, "url", rpcURL)
 
-		client := &http.Client{Timeout: 5 * time.Second}
+		client := &http.Client{Timeout: 2 * time.Second}
 		payload := map[string]interface{}{
 			"jsonrpc": "2.0",
 			"method":  "eth_call",

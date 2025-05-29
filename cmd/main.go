@@ -100,7 +100,7 @@ func performRPCSanityCheck(cfg *config.Config) error {
 		}
 
 		// Test eth_chainId
-		client := &http.Client{Timeout: 10 * time.Second}
+		client := &http.Client{Timeout: 2 * time.Second}
 
 		payload := map[string]interface{}{
 			"jsonrpc": "2.0",
