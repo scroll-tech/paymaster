@@ -1,12 +1,17 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"math/big"
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -26,6 +31,11 @@ func action(ctx *cli.Context) error {
 	cfg, err := config.NewConfig(cfgFile)
 	if err != nil {
 		log.Crit("failed to load config file", "config file", cfgFile, "error", err)
+	}
+
+	// Perform RPC sanity check
+	if err = performRPCSanityCheck(cfg); err != nil {
+		log.Crit("RPC sanity check failed", "error", err)
 	}
 
 	observability.Server(ctx)
@@ -66,6 +76,98 @@ func action(ctx *cli.Context) error {
 
 	<-closeCtx.Done()
 	log.Info("paymaster server exiting success")
+	return nil
+}
+
+// performRPCSanityCheck tests each RPC URL with eth_chainId
+func performRPCSanityCheck(cfg *config.Config) error {
+	log.Info("Performing RPC sanity check...")
+
+	if len(cfg.EthereumRPCURLs) == 0 {
+		return fmt.Errorf("no Ethereum RPC URLs configured")
+	}
+
+	for i, rpcURL := range cfg.EthereumRPCURLs {
+		log.Info("Testing RPC endpoint", "index", i+1, "url", rpcURL)
+
+		// Basic URL validation
+		if rpcURL == "" {
+			return fmt.Errorf("RPC URL %d is empty", i+1)
+		}
+
+		if !strings.HasPrefix(rpcURL, "http://") && !strings.HasPrefix(rpcURL, "https://") {
+			return fmt.Errorf("RPC URL %d has invalid format: %s", i+1, rpcURL)
+		}
+
+		// Test eth_chainId
+		client := &http.Client{Timeout: 10 * time.Second}
+
+		payload := map[string]interface{}{
+			"jsonrpc": "2.0",
+			"method":  "eth_chainId",
+			"params":  []interface{}{},
+			"id":      1,
+		}
+
+		jsonData, err := json.Marshal(payload)
+		if err != nil {
+			return fmt.Errorf("failed to marshal eth_chainId request for RPC %d (%s): %w", i+1, rpcURL, err)
+		}
+
+		resp, err := client.Post(rpcURL, "application/json", bytes.NewBuffer(jsonData))
+		if err != nil {
+			return fmt.Errorf("failed to connect to RPC %d (%s): %w", i+1, rpcURL, err)
+		}
+
+		body, err := io.ReadAll(resp.Body)
+		if closeErr := resp.Body.Close(); closeErr != nil {
+			log.Warn("Failed to close response body", "rpc", rpcURL, "error", closeErr)
+		}
+		if err != nil {
+			return fmt.Errorf("failed to read response from RPC %d (%s): %w", i+1, rpcURL, err)
+		}
+
+		if resp.StatusCode != http.StatusOK {
+			return fmt.Errorf("RPC %d (%s) returned HTTP error: %d %s", i+1, rpcURL, resp.StatusCode, resp.Status)
+		}
+
+		var rpcResponse struct {
+			Result string `json:"result"`
+			Error  *struct {
+				Code    int    `json:"code"`
+				Message string `json:"message"`
+			} `json:"error"`
+		}
+
+		if err := json.Unmarshal(body, &rpcResponse); err != nil {
+			return fmt.Errorf("failed to parse response from RPC %d (%s): %w", i+1, rpcURL, err)
+		}
+
+		if rpcResponse.Error != nil {
+			return fmt.Errorf("RPC %d (%s) returned error: %s", i+1, rpcURL, rpcResponse.Error.Message)
+		}
+
+		// Parse and validate chain ID
+		chainIDHex := rpcResponse.Result
+		if len(chainIDHex) >= 2 && chainIDHex[:2] == "0x" {
+			chainIDHex = chainIDHex[2:]
+		}
+
+		chainID, ok := new(big.Int).SetString(chainIDHex, 16)
+		if !ok {
+			return fmt.Errorf("failed to parse chainId from RPC %d (%s): %s", i+1, rpcURL, rpcResponse.Result)
+		}
+
+		// Check if the chain ID matches Ethereum mainnet (1)
+		// Because paymaster uses gas oracle of Chainlink deployed on Ethereum mainnet.
+		if chainID.Int64() != 1 {
+			return fmt.Errorf("chain ID mismatch for RPC %d (%s): got %d, expected Ethereum mainnet (1)", i+1, rpcURL, chainID.Int64())
+		}
+
+		log.Info("RPC endpoint verified", "index", i+1, "url", rpcURL, "chainId", chainID.Int64())
+	}
+
+	log.Info("All RPC endpoints verified successfully", "count", len(cfg.EthereumRPCURLs))
 	return nil
 }
 

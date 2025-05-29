@@ -16,7 +16,7 @@ type Config struct {
 	ChainID            int64          `json:"chain_id"`
 	SignerPrivateKey   string         `json:"signer_private_key"`
 	USDTAddress        common.Address `json:"usdt_address"`
-	EthereumRPCURL     string         `json:"ethereum_rpc_url"`
+	EthereumRPCURLs    []string       `json:"ethereum_rpc_urls"`
 }
 
 // NewConfig return an unmarshalled config instance.
