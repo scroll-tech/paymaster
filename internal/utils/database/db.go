@@ -44,7 +44,7 @@ func (g *gormLogger) Trace(_ context.Context, begin time.Time, fc func() (string
 }
 
 // InitDB init the db handler
-func InitDB(config *Config) (*gorm.DB, error) {
+func InitDB(config Config) (*gorm.DB, error) {
 	tmpGormLogger := gormLogger{
 		gethLogger: log.Root(),
 	}

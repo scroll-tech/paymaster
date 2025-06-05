@@ -47,13 +47,10 @@ func (p *Policy) Create(ctx context.Context, policy *Policy) error {
 func (p *Policy) GetByAPIKeyAndPolicyID(ctx context.Context, apiKey string, policyID int64) (*Policy, error) {
 	var result Policy
 	err := p.db.WithContext(ctx).
-		Where("api_key = ? AND policy_id = ?", apiKey, policyID).
+		Where("api_key = ?", apiKey).
+		Where("policy_id = ?", policyID).
 		First(&result).Error
-	if err != nil {
-		return nil, err
-	}
-	result.db = p.db
-	return &result, nil
+	return &result, err
 }
 
 // GetByAPIKey retrieves all policies for a given API key
@@ -63,26 +60,22 @@ func (p *Policy) GetByAPIKey(ctx context.Context, apiKey string) ([]*Policy, err
 		Where("api_key = ?", apiKey).
 		Order("policy_id ASC").
 		Find(&results).Error
-	if err != nil {
-		return nil, err
-	}
-	for _, result := range results {
-		result.db = p.db
-	}
-	return results, nil
+	return results, err
 }
 
 // Update updates a policy record
 func (p *Policy) Update(ctx context.Context, apiKey string, policyID int64, updates map[string]interface{}) error {
 	return p.db.WithContext(ctx).
 		Model(&Policy{}).
-		Where("api_key = ? AND policy_id = ?", apiKey, policyID).
+		Where("api_key = ?", apiKey).
+		Where("policy_id = ?", policyID).
 		Updates(updates).Error
 }
 
 // Delete soft deletes a policy record
 func (p *Policy) Delete(ctx context.Context, apiKey string, policyID int64) error {
 	return p.db.WithContext(ctx).
-		Where("api_key = ? AND policy_id = ?", apiKey, policyID).
+		Where("api_key = ?", apiKey).
+		Where("policy_id = ?", policyID).
 		Delete(&Policy{}).Error
 }

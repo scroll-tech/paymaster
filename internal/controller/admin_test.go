@@ -1,4 +1,3 @@
-// Package controller_test provides integration tests for the admin controller.
 package controller
 
 import (
@@ -109,7 +108,7 @@ func TestAdminController_Integration(t *testing.T) {
 		router := setupTestRouter(db)
 
 		params := map[string]interface{}{
-			"policy_id":   "1",
+			"policy_id":   1,
 			"policy_name": "Test Policy",
 			"limits": map[string]interface{}{
 				"max_eth_per_wallet_per_window": "0.1",
@@ -118,7 +117,6 @@ func TestAdminController_Integration(t *testing.T) {
 		}
 
 		w := makeRequest(t, router, "pm_createPolicy", params)
-
 		assert.Equal(t, http.StatusOK, w.Code)
 
 		var resp types.PaymasterJSONRPCResponse
@@ -139,7 +137,7 @@ func TestAdminController_Integration(t *testing.T) {
 
 		// First create a policy
 		createParams := map[string]interface{}{
-			"policy_id":   "10",
+			"policy_id":   10,
 			"policy_name": "Get Test Policy",
 			"limits": map[string]interface{}{
 				"max_eth_per_wallet_per_window": "0.5",
@@ -152,7 +150,7 @@ func TestAdminController_Integration(t *testing.T) {
 
 		// Then get the policy
 		getParams := map[string]interface{}{
-			"policy_id": "10",
+			"policy_id": 10,
 		}
 
 		w = makeRequest(t, router, "pm_getPolicyByID", getParams)
@@ -166,13 +164,16 @@ func TestAdminController_Integration(t *testing.T) {
 		assert.Nil(t, resp.Error)
 		assert.NotNil(t, resp.Result)
 
-		result := resp.Result.(map[string]interface{})
-		assert.Equal(t, "10", result["policy_id"])
-		assert.Equal(t, "Get Test Policy", result["policy_name"])
+		var policy types.PolicyResponse
+		resultBytes, err := json.Marshal(resp.Result)
+		require.NoError(t, err)
+		err = json.Unmarshal(resultBytes, &policy)
+		require.NoError(t, err)
 
-		limits := result["limits"].(map[string]interface{})
-		assert.Equal(t, "0.5", limits["max_eth_per_wallet_per_window"])
-		assert.Equal(t, float64(48), limits["time_window_hours"])
+		assert.Equal(t, int64(10), policy.PolicyID)
+		assert.Equal(t, "Get Test Policy", policy.PolicyName)
+		assert.Equal(t, "0.5", policy.Limits.MaxEthPerWalletPerWindow)
+		assert.Equal(t, int(48), policy.Limits.TimeWindowHours)
 	})
 
 	t.Run("ListPolicies_Success", func(t *testing.T) {
@@ -182,7 +183,7 @@ func TestAdminController_Integration(t *testing.T) {
 		// Create several policies
 		policies := []map[string]interface{}{
 			{
-				"policy_id":   "20",
+				"policy_id":   20,
 				"policy_name": "List Test Policy 1",
 				"limits": map[string]interface{}{
 					"max_eth_per_wallet_per_window": "0.1",
@@ -190,7 +191,7 @@ func TestAdminController_Integration(t *testing.T) {
 				},
 			},
 			{
-				"policy_id":   "21",
+				"policy_id":   21,
 				"policy_name": "List Test Policy 2",
 				"limits": map[string]interface{}{
 					"max_eth_per_wallet_per_window": "0.2",
@@ -216,51 +217,35 @@ func TestAdminController_Integration(t *testing.T) {
 		assert.Nil(t, resp.Error)
 		assert.NotNil(t, resp.Result)
 
-		result := resp.Result.([]interface{})
-		assert.GreaterOrEqual(t, len(result), 2)
+		var policyList []types.PolicyResponse
+		resultBytes, err := json.Marshal(resp.Result)
+		require.NoError(t, err)
+		err = json.Unmarshal(resultBytes, &policyList)
+		require.NoError(t, err)
 
-		// Find our test policies in the sorted list
-		policy1 := result[0].(map[string]interface{})
-		policy2 := result[1].(map[string]interface{})
+		assert.Equal(t, 2, len(policyList))
+
+		// Policies are returned in ascending order by policy_id
+		policy1 := policyList[0]
+		policy2 := policyList[1]
 
 		// Verify Policy 1 (ID: 20)
 		assert.NotNil(t, policy1, "Policy with ID 20 should exist")
-		assert.Equal(t, "20", policy1["policy_id"])
-		assert.Equal(t, "List Test Policy 1", policy1["policy_name"])
-		assert.NotNil(t, policy1["created_at"])
-		assert.NotNil(t, policy1["updated_at"])
-
-		limits1 := policy1["limits"].(map[string]interface{})
-		assert.Equal(t, "0.1", limits1["max_eth_per_wallet_per_window"])
-		assert.Equal(t, float64(24), limits1["time_window_hours"])
+		assert.Equal(t, int64(20), policy1.PolicyID)
+		assert.Equal(t, "List Test Policy 1", policy1.PolicyName)
+		assert.NotEmpty(t, policy1.CreatedAt)
+		assert.NotEmpty(t, policy1.UpdatedAt)
+		assert.Equal(t, "0.1", policy1.Limits.MaxEthPerWalletPerWindow)
+		assert.Equal(t, int(24), policy1.Limits.TimeWindowHours)
 
 		// Verify Policy 2 (ID: 21)
 		assert.NotNil(t, policy2, "Policy with ID 21 should exist")
-		assert.Equal(t, "21", policy2["policy_id"])
-		assert.Equal(t, "List Test Policy 2", policy2["policy_name"])
-		assert.NotNil(t, policy2["created_at"])
-		assert.NotNil(t, policy2["updated_at"])
-
-		limits2 := policy2["limits"].(map[string]interface{})
-		assert.Equal(t, "0.2", limits2["max_eth_per_wallet_per_window"])
-		assert.Equal(t, float64(48), limits2["time_window_hours"])
-
-		// Verify that all policies in the list have the required fields
-		for _, item := range result {
-			policy := item.(map[string]interface{})
-
-			// Check required fields exist and have correct types
-			assert.IsType(t, "", policy["policy_id"])
-			assert.IsType(t, "", policy["policy_name"])
-			assert.IsType(t, map[string]interface{}{}, policy["limits"])
-			assert.IsType(t, "", policy["created_at"])
-			assert.IsType(t, "", policy["updated_at"])
-
-			// Check limits structure
-			limits := policy["limits"].(map[string]interface{})
-			assert.IsType(t, "", limits["max_eth_per_wallet_per_window"])
-			assert.IsType(t, float64(0), limits["time_window_hours"])
-		}
+		assert.Equal(t, int64(21), policy2.PolicyID)
+		assert.Equal(t, "List Test Policy 2", policy2.PolicyName)
+		assert.NotEmpty(t, policy2.CreatedAt)
+		assert.NotEmpty(t, policy2.UpdatedAt)
+		assert.Equal(t, "0.2", policy2.Limits.MaxEthPerWalletPerWindow)
+		assert.Equal(t, int(48), policy2.Limits.TimeWindowHours)
 	})
 
 	t.Run("UpdatePolicy_Success", func(t *testing.T) {
@@ -269,7 +254,7 @@ func TestAdminController_Integration(t *testing.T) {
 
 		// First create a policy
 		createParams := map[string]interface{}{
-			"policy_id":   "30",
+			"policy_id":   30,
 			"policy_name": "Update Test Policy",
 			"limits": map[string]interface{}{
 				"max_eth_per_wallet_per_window": "0.1",
@@ -282,7 +267,7 @@ func TestAdminController_Integration(t *testing.T) {
 
 		// Update the policy
 		updateParams := map[string]interface{}{
-			"policy_id":   "30",
+			"policy_id":   30,
 			"policy_name": "Updated Policy Name",
 			"limits": map[string]interface{}{
 				"max_eth_per_wallet_per_window": "0.2",
@@ -291,7 +276,6 @@ func TestAdminController_Integration(t *testing.T) {
 		}
 
 		w = makeRequest(t, router, "pm_updatePolicy", updateParams)
-
 		assert.Equal(t, http.StatusOK, w.Code)
 
 		var resp types.PaymasterJSONRPCResponse
@@ -307,7 +291,7 @@ func TestAdminController_Integration(t *testing.T) {
 
 		// Verify the update took effect
 		getParams := map[string]interface{}{
-			"policy_id": "30",
+			"policy_id": 30,
 		}
 
 		w = makeRequest(t, router, "pm_getPolicyByID", getParams)
@@ -316,12 +300,15 @@ func TestAdminController_Integration(t *testing.T) {
 		err = json.Unmarshal(w.Body.Bytes(), &resp)
 		require.NoError(t, err)
 
-		result = resp.Result.(map[string]interface{})
-		assert.Equal(t, "Updated Policy Name", result["policy_name"])
+		var policy types.PolicyResponse
+		resultBytes, err := json.Marshal(resp.Result)
+		require.NoError(t, err)
+		err = json.Unmarshal(resultBytes, &policy)
+		require.NoError(t, err)
 
-		limits := result["limits"].(map[string]interface{})
-		assert.Equal(t, "0.2", limits["max_eth_per_wallet_per_window"])
-		assert.Equal(t, float64(48), limits["time_window_hours"])
+		assert.Equal(t, "Updated Policy Name", policy.PolicyName)
+		assert.Equal(t, "0.2", policy.Limits.MaxEthPerWalletPerWindow)
+		assert.Equal(t, int(48), policy.Limits.TimeWindowHours)
 	})
 
 	t.Run("DeletePolicy_Success", func(t *testing.T) {
@@ -330,7 +317,7 @@ func TestAdminController_Integration(t *testing.T) {
 
 		// First create a policy
 		createParams := map[string]interface{}{
-			"policy_id":   "40",
+			"policy_id":   40,
 			"policy_name": "Delete Test Policy",
 			"limits": map[string]interface{}{
 				"max_eth_per_wallet_per_window": "0.1",
@@ -343,7 +330,7 @@ func TestAdminController_Integration(t *testing.T) {
 
 		// Delete the policy
 		deleteParams := map[string]interface{}{
-			"policy_id": "40",
+			"policy_id": 40,
 		}
 
 		w = makeRequest(t, router, "pm_deletePolicy", deleteParams)
@@ -363,10 +350,11 @@ func TestAdminController_Integration(t *testing.T) {
 
 		// Verify the policy was deleted
 		getParams := map[string]interface{}{
-			"policy_id": "40",
+			"policy_id": 40,
 		}
 
 		w = makeRequest(t, router, "pm_getPolicyByID", getParams)
+		assert.Equal(t, http.StatusOK, w.Code)
 
 		err = json.Unmarshal(w.Body.Bytes(), &resp)
 		require.NoError(t, err)
@@ -451,7 +439,7 @@ func TestAdminController_Integration_InvalidCases(t *testing.T) {
 		router := setupTestRouter(db)
 
 		params := map[string]interface{}{
-			"policy_id": "100",
+			"policy_id": 100,
 			"limits": map[string]interface{}{
 				"max_eth_per_wallet_per_window": "0.1",
 				"time_window_hours":             24,
@@ -470,12 +458,12 @@ func TestAdminController_Integration_InvalidCases(t *testing.T) {
 		assert.Contains(t, resp.Error.Message, "policy_name is required")
 	})
 
-	t.Run("CreatePolicy_InvalidPolicyIDFormat", func(t *testing.T) {
+	t.Run("CreatePolicy_NegativePolicyID", func(t *testing.T) {
 		db := setupTestDB(t)
 		router := setupTestRouter(db)
 
 		params := map[string]interface{}{
-			"policy_id":   "invalid_id",
+			"policy_id":   -1,
 			"policy_name": "Test Policy",
 			"limits": map[string]interface{}{
 				"max_eth_per_wallet_per_window": "0.1",
@@ -492,7 +480,7 @@ func TestAdminController_Integration_InvalidCases(t *testing.T) {
 
 		assert.NotNil(t, resp.Error)
 		assert.Equal(t, types.InvalidParamsCode, resp.Error.Code)
-		assert.Contains(t, resp.Error.Message, "Invalid policy_id format")
+		assert.Contains(t, resp.Error.Message, "policy_id must be positive")
 	})
 
 	t.Run("CreatePolicy_ValidationError", func(t *testing.T) {
@@ -500,7 +488,7 @@ func TestAdminController_Integration_InvalidCases(t *testing.T) {
 		router := setupTestRouter(db)
 
 		params := map[string]interface{}{
-			"policy_id":   "101",
+			"policy_id":   101,
 			"policy_name": "Invalid Policy",
 			"limits": map[string]interface{}{
 				"max_eth_per_wallet_per_window": "0", // Invalid: must be > 0
@@ -525,7 +513,7 @@ func TestAdminController_Integration_InvalidCases(t *testing.T) {
 		router := setupTestRouter(db)
 
 		params := map[string]interface{}{
-			"policy_id": "999",
+			"policy_id": 999,
 		}
 
 		w := makeRequest(t, router, "pm_getPolicyByID", params)
@@ -558,12 +546,12 @@ func TestAdminController_Integration_InvalidCases(t *testing.T) {
 		assert.Contains(t, resp.Error.Message, "policy_id is required")
 	})
 
-	t.Run("GetPolicyByID_InvalidPolicyIDFormat", func(t *testing.T) {
+	t.Run("GetPolicyByID_NegativePolicyID", func(t *testing.T) {
 		db := setupTestDB(t)
 		router := setupTestRouter(db)
 
 		params := map[string]interface{}{
-			"policy_id": "invalid_id",
+			"policy_id": -1,
 		}
 
 		w := makeRequest(t, router, "pm_getPolicyByID", params)
@@ -575,7 +563,7 @@ func TestAdminController_Integration_InvalidCases(t *testing.T) {
 
 		assert.NotNil(t, resp.Error)
 		assert.Equal(t, types.InvalidParamsCode, resp.Error.Code)
-		assert.Contains(t, resp.Error.Message, "Invalid policy_id format")
+		assert.Contains(t, resp.Error.Message, "policy_id must be positive")
 	})
 
 	t.Run("UpdatePolicy_NotFound", func(t *testing.T) {
@@ -583,7 +571,7 @@ func TestAdminController_Integration_InvalidCases(t *testing.T) {
 		router := setupTestRouter(db)
 
 		params := map[string]interface{}{
-			"policy_id":   "999",
+			"policy_id":   999,
 			"policy_name": "Non-existent Policy",
 		}
 
@@ -604,7 +592,7 @@ func TestAdminController_Integration_InvalidCases(t *testing.T) {
 
 		// First create a policy
 		createParams := map[string]interface{}{
-			"policy_id":   "102",
+			"policy_id":   102,
 			"policy_name": "Test Policy for Update",
 			"limits": map[string]interface{}{
 				"max_eth_per_wallet_per_window": "0.1",
@@ -617,7 +605,7 @@ func TestAdminController_Integration_InvalidCases(t *testing.T) {
 
 		// Try to update without any parameters
 		updateParams := map[string]interface{}{
-			"policy_id": "102",
+			"policy_id": 102,
 		}
 
 		w = makeRequest(t, router, "pm_updatePolicy", updateParams)
@@ -638,7 +626,7 @@ func TestAdminController_Integration_InvalidCases(t *testing.T) {
 
 		// First create a policy
 		createParams := map[string]interface{}{
-			"policy_id":   "103",
+			"policy_id":   103,
 			"policy_name": "Test Policy for Update",
 			"limits": map[string]interface{}{
 				"max_eth_per_wallet_per_window": "0.1",
@@ -651,7 +639,7 @@ func TestAdminController_Integration_InvalidCases(t *testing.T) {
 
 		// Try to update with invalid limits
 		updateParams := map[string]interface{}{
-			"policy_id": "103",
+			"policy_id": 103,
 			"limits": map[string]interface{}{
 				"max_eth_per_wallet_per_window": "-1", // Invalid: negative value
 				"time_window_hours":             24,
@@ -675,7 +663,7 @@ func TestAdminController_Integration_InvalidCases(t *testing.T) {
 		router := setupTestRouter(db)
 
 		params := map[string]interface{}{
-			"policy_id": "999",
+			"policy_id": 999,
 		}
 
 		w := makeRequest(t, router, "pm_deletePolicy", params)

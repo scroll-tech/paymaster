@@ -15,8 +15,6 @@ var (
 		&HTTPPortFlag,
 
 		&verbosityFlag,
-		&logFileFlag,
-		&logJSONFormat,
 		&logDebugFlag,
 
 		&MetricsEnabled,
@@ -60,18 +58,7 @@ var (
 		Usage: "Logging verbosity: 0=silent, 1=error, 2=warn, 3=info, 4=debug, 5=detail.",
 		Value: 3,
 	}
-	// logFileFlag decides where the logger output is sent. If this flag is left
-	// empty, it will log to stdout.
-	logFileFlag = cli.StringFlag{
-		Name:  "log.file",
-		Usage: "Tells the module where to write log entries.",
-	}
-	// logJSONFormat decides the log format is json or not
-	logJSONFormat = cli.BoolFlag{
-		Name:  "log.json",
-		Usage: "Tells the module whether log format is json or not.",
-		Value: true,
-	}
+
 	// logDebugFlag make log messages with call-site location
 	logDebugFlag = cli.BoolFlag{
 		Name:  "log.debug",

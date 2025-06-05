@@ -11,7 +11,6 @@ import (
 	"io"
 	"math/big"
 	"net/http"
-	"strconv"
 	"strings"
 	"time"
 
@@ -27,12 +26,8 @@ import (
 	"github.com/scroll-tech/paymaster/internal/types"
 )
 
-// Constants for RPC Errors (as per JSON-RPC 2.0 spec and EIP-1474)
-const (
-	entryPointV7Address = "0x0000000071727De22E5E9d8BAf0edAc6f37da032"
-)
+const entryPointV7Address = "0x0000000071727De22E5E9d8BAf0edAc6f37da032"
 
-// Zero address constant
 var emptyAddr = common.Address{}
 
 // PaymasterController the controller of paymaster
@@ -110,7 +105,7 @@ func (pc *PaymasterController) handleGetPaymasterStubData(c *gin.Context, req ty
 		}
 
 		// Create or update record
-		if err = pc.createOrUpdateRecord(c.Request.Context(), apiKey, policyID, params.Sender, params.Nonce.ToInt(), estimatedWei, orm.UserOperationStatusStubDataProvided); err != nil {
+		if err = pc.createOrUpdateRecord(c.Request.Context(), apiKey, policyID, params.Sender, params.Nonce.ToInt(), estimatedWei, orm.UserOperationStatusPaymasterStubDataProvided); err != nil {
 			log.Error("Failed to create or update operation record", "error", err, "sender", params.Sender.Hex(), "nonce", params.Nonce.String(), "policy_id", policyID)
 			types.SendError(c, req.ID, types.InternalErrorCode, "Operation failed")
 			return
@@ -177,14 +172,11 @@ func (pc *PaymasterController) checkQuota(ctx context.Context, apiKey string, po
 	// Get policy to check limits
 	policy, err := pc.policyOrm.GetByAPIKeyAndPolicyID(ctx, apiKey, policyID)
 	if err != nil {
-		if err == gorm.ErrRecordNotFound {
-			return fmt.Errorf("policy not found: %d", policyID)
-		}
-		return fmt.Errorf("failed to get policy: %w", err)
+		return fmt.Errorf("failed to get policy, policy_id: %d, error: %w", policyID, err)
 	}
 
 	// Get current usage
-	currentUsageWei, err := pc.userOperationOrm.GetWalletUsage(ctx, apiKey, sender.Hex(), policy.Limits.TimeWindowHours)
+	currentUsageWei, err := pc.userOperationOrm.GetWalletUsage(ctx, apiKey, policyID, sender.Hex(), policy.Limits.TimeWindowHours)
 	if err != nil {
 		return fmt.Errorf("failed to get current usage: %w", err)
 	}
@@ -303,7 +295,7 @@ func (pc *PaymasterController) parseERC7677Params(rawParams json.RawMessage) (*t
 
 	type ERC7677Context struct {
 		Token    string `json:"token"`
-		PolicyID string `json:"policy_id"`
+		PolicyID *int64 `json:"policy_id"`
 	}
 
 	var context *ERC7677Context
@@ -318,16 +310,17 @@ func (pc *PaymasterController) parseERC7677Params(rawParams json.RawMessage) (*t
 		return nil, common.Address{}, 0, &types.RPCError{Code: types.InvalidParamsCode, Message: "Context is required"}
 	}
 
-	if context.PolicyID == "" {
+	if context.PolicyID == nil {
 		log.Debug("Missing policy_id in context")
 		return nil, common.Address{}, 0, &types.RPCError{Code: types.InvalidParamsCode, Message: "policy_id is required in context"}
 	}
 
-	policyID, err := strconv.ParseInt(context.PolicyID, 10, 64)
-	if err != nil {
-		log.Debug("Invalid policy_id format", "policy_id", context.PolicyID, "error", err)
-		return nil, common.Address{}, 0, &types.RPCError{Code: types.InvalidParamsCode, Message: "Invalid policy_id format"}
+	if *context.PolicyID < 0 {
+		log.Debug("Invalid policy_id", "policy_id", *context.PolicyID)
+		return nil, common.Address{}, 0, &types.RPCError{Code: types.InvalidParamsCode, Message: "Invalid policy_id. It must be a non-negative integer."}
 	}
+
+	policyID := *context.PolicyID
 
 	// Handle token address
 	tokenAddr := common.Address{}

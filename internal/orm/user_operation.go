@@ -13,8 +13,8 @@ import (
 type UserOperationStatus int
 
 const (
-	// UserOperationStatusStubDataProvided is the status when pm_getPaymasterStubData is called
-	UserOperationStatusStubDataProvided UserOperationStatus = 1
+	// UserOperationStatusPaymasterStubDataProvided is the status when pm_getPaymasterStubData is called
+	UserOperationStatusPaymasterStubDataProvided UserOperationStatus = 1
 	// UserOperationStatusPaymasterDataProvided is the status when pm_getPaymasterData is called
 	UserOperationStatusPaymasterDataProvided UserOperationStatus = 2
 )
@@ -24,10 +24,10 @@ type UserOperation struct {
 	db *gorm.DB `gorm:"column:-"`
 
 	ID        uint64              `gorm:"column:id;primaryKey"`
-	APIKey    string              `gorm:"column:api_key"`
-	PolicyID  int64               `gorm:"column:policy_id"`
-	Sender    string              `gorm:"column:sender;uniqueIndex:unique_sender_nonce"`
-	Nonce     int64               `gorm:"column:nonce;uniqueIndex:unique_sender_nonce"`
+	APIKey    string              `gorm:"column:api_key;uniqueIndex:unique_idx_api_key_policy_id_sender_nonce"`
+	PolicyID  int64               `gorm:"column:policy_id;uniqueIndex:unique_idx_api_key_policy_id_sender_nonce"`
+	Sender    string              `gorm:"column:sender;uniqueIndex:unique_idx_api_key_policy_id_sender_nonce"`
+	Nonce     int64               `gorm:"column:nonce;uniqueIndex:unique_idx_api_key_policy_id_sender_nonce"`
 	WeiAmount int64               `gorm:"column:wei_amount"`
 	Status    UserOperationStatus `gorm:"column:status"`
 	CreatedAt time.Time           `gorm:"column:created_at"`
@@ -49,7 +49,12 @@ func NewUserOperation(db *gorm.DB) *UserOperation {
 func (u *UserOperation) CreateOrUpdate(ctx context.Context, userOp *UserOperation) error {
 	return u.db.WithContext(ctx).
 		Clauses(clause.OnConflict{
-			Columns: []clause.Column{{Name: "sender"}, {Name: "nonce"}},
+			Columns: []clause.Column{
+				{Name: "api_key"},
+				{Name: "policy_id"},
+				{Name: "sender"},
+				{Name: "nonce"},
+			},
 			DoUpdates: clause.Assignments(map[string]interface{}{
 				"wei_amount": gorm.Expr("CASE WHEN EXCLUDED.wei_amount > user_operation.wei_amount THEN EXCLUDED.wei_amount ELSE user_operation.wei_amount END"),
 				"status":     gorm.Expr("EXCLUDED.status"),
@@ -58,36 +63,17 @@ func (u *UserOperation) CreateOrUpdate(ctx context.Context, userOp *UserOperatio
 		Create(userOp).Error
 }
 
-// GetWalletUsage calculates the ETH amount used by a specific sender within the time window
-func (u *UserOperation) GetWalletUsage(ctx context.Context, apiKey string, sender string, timeWindowHours int) (int64, error) {
+// GetWalletUsage calculates the ETH amount used by a specific sender within the time window for a specific policy
+func (u *UserOperation) GetWalletUsage(ctx context.Context, apiKey string, policyID int64, sender string, timeWindowHours int) (int64, error) {
 	var usage int64
 	err := u.db.WithContext(ctx).
 		Model(&UserOperation{}).
 		Select("COALESCE(SUM(wei_amount), 0)").
 		Where("api_key = ?", apiKey).
+		Where("policy_id = ?", policyID).
 		Where("sender = ?", sender).
 		Where("updated_at >= ?", time.Now().UTC().Add(time.Duration(-timeWindowHours)*time.Hour)).
 		Scan(&usage).Error
 
 	return usage, err
-}
-
-// GetBySenderAndNonce retrieves user operations by sender and nonce
-// NOTE: This function is intended for testing purposes only
-func (u *UserOperation) GetBySenderAndNonce(ctx context.Context, apiKey string, sender string, nonce int64) ([]*UserOperation, error) {
-	var results []*UserOperation
-	if err := u.db.WithContext(ctx).
-		Where("api_key = ?", apiKey).
-		Where("sender = ?", sender).
-		Where("nonce = ?", nonce).
-		Find(&results).Error; err != nil {
-		return nil, err
-	}
-
-	// Set db instance for each result
-	for _, result := range results {
-		result.db = u.db
-	}
-
-	return results, nil
 }

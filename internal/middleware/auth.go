@@ -30,6 +30,9 @@ func AuthMiddleware(cfg *config.Config) gin.HandlerFunc {
 			return
 		}
 
+		// Store validated API key in context for later use
+		c.Set("api_key", apiKey)
+
 		c.Next()
 	}
 }

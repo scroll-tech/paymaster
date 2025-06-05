@@ -5,7 +5,7 @@ import "github.com/scroll-tech/paymaster/internal/orm"
 
 // PolicyResponse represents a policy in API responses
 type PolicyResponse struct {
-	PolicyID   string           `json:"policy_id"`
+	PolicyID   int64            `json:"policy_id"`
 	PolicyName string           `json:"policy_name"`
 	Limits     orm.PolicyLimits `json:"limits"`
 	CreatedAt  string           `json:"created_at"`

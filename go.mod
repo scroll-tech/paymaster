@@ -9,8 +9,6 @@ require (
 	github.com/gin-contrib/pprof v1.5.3
 	github.com/gin-gonic/gin v1.10.1
 	github.com/juju/ratelimit v1.0.2
-	github.com/mattn/go-colorable v0.1.13
-	github.com/mattn/go-isatty v0.0.20
 	github.com/pressly/goose/v3 v3.24.3
 	github.com/prometheus/client_golang v1.14.0
 	github.com/stretchr/testify v1.10.0
@@ -48,6 +46,7 @@ require (
 	github.com/json-iterator/go v1.1.12 // indirect
 	github.com/klauspost/cpuid/v2 v2.2.10 // indirect
 	github.com/leodido/go-urn v1.4.0 // indirect
+	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/mattn/go-sqlite3 v1.14.22 // indirect
 	github.com/matttproud/golang_protobuf_extensions v1.0.4 // indirect
 	github.com/mfridman/interpolate v0.0.2 // indirect

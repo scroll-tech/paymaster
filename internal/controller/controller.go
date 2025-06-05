@@ -2,8 +2,6 @@
 package controller
 
 import (
-	"strings"
-
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
@@ -12,16 +10,15 @@ import (
 	"github.com/scroll-tech/paymaster/internal/types"
 )
 
-// PaymasterCtl paymaster controller instance
-var PaymasterCtl *PaymasterController
-
-// AdminCtl admin controller instance
-var AdminCtl *AdminController
+var (
+	paymasterCtl *PaymasterController
+	adminCtl     *AdminController
+)
 
 // InitAPI init api handler
 func InitAPI(cfg *config.Config, db *gorm.DB) {
-	PaymasterCtl = NewPaymasterController(cfg, db)
-	AdminCtl = NewAdminController(cfg, db)
+	paymasterCtl = NewPaymasterController(cfg, db)
+	adminCtl = NewAdminController(cfg, db)
 }
 
 // UnifiedHandler handles all JSON-RPC requests
@@ -37,24 +34,32 @@ func UnifiedHandler(c *gin.Context) {
 		return
 	}
 
-	authHeader := c.GetHeader("Authorization")
-	if !strings.HasPrefix(authHeader, "Bearer ") {
-		types.SendError(c, nil, types.UnauthorizedErrorCode, "Missing or invalid Authorization header")
+	// Get API key from GIN context, which is fetched by the AuthMiddleware
+	apiKeyRaw, exists := c.Get("api_key")
+	if !exists {
+		types.SendError(c, req.ID, types.UnauthorizedErrorCode, "Unauthorized: API key required in Authorization header")
 		return
 	}
 
-	apiKey := strings.TrimPrefix(authHeader, "Bearer ")
-	if apiKey != AdminCtl.cfg.APIKey {
-		types.SendError(c, nil, types.UnauthorizedErrorCode, "Invalid API key")
+	apiKey, ok := apiKeyRaw.(string)
+	if !ok || apiKey == "" {
+		types.SendError(c, req.ID, types.UnauthorizedErrorCode, "Unauthorized: Invalid API key format")
+		return
+	}
+
+	// Still validate the API key against the config to verify some settings in unit tests
+	if apiKey != adminCtl.cfg.APIKey {
+		log.Debug("Unauthorized: Invalid API key", "provided", apiKey)
+		types.SendError(c, req.ID, types.UnauthorizedErrorCode, "Unauthorized: Invalid API key")
 		return
 	}
 
 	switch req.Method {
 	case "pm_getPaymasterStubData", "pm_getPaymasterData":
-		PaymasterCtl.handlePaymasterMethod(c, req, apiKey)
+		paymasterCtl.handlePaymasterMethod(c, req, apiKey)
 
 	case "pm_listPolicies", "pm_getPolicyByID", "pm_createPolicy", "pm_updatePolicy", "pm_deletePolicy":
-		AdminCtl.handleAdminMethod(c, req, apiKey)
+		adminCtl.handleAdminMethod(c, req, apiKey)
 
 	default:
 		log.Debug("Method not found", "method", req.Method)

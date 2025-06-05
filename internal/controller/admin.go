@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"math/big"
-	"strconv"
 
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/gin-gonic/gin"
@@ -19,7 +18,6 @@ import (
 // AdminController handles admin API requests
 type AdminController struct {
 	cfg       *config.Config
-	db        *gorm.DB
 	policyOrm *orm.Policy
 }
 
@@ -27,7 +25,6 @@ type AdminController struct {
 func NewAdminController(cfg *config.Config, db *gorm.DB) *AdminController {
 	return &AdminController{
 		cfg:       cfg,
-		db:        db,
 		policyOrm: orm.NewPolicy(db),
 	}
 }
@@ -63,7 +60,7 @@ func (ac *AdminController) handleListPolicies(c *gin.Context, req types.Paymaste
 	var result []types.PolicyResponse
 	for _, policy := range policies {
 		result = append(result, types.PolicyResponse{
-			PolicyID:   strconv.FormatInt(policy.PolicyID, 10),
+			PolicyID:   policy.PolicyID,
 			PolicyName: policy.PolicyName,
 			Limits:     policy.Limits,
 			CreatedAt:  policy.CreatedAt.Format("2006-01-02T15:04:05Z"),
@@ -71,14 +68,14 @@ func (ac *AdminController) handleListPolicies(c *gin.Context, req types.Paymaste
 		})
 	}
 
-	log.Debug("Listed policies", "count", len(result), "apiKey", apiKey)
+	log.Debug("Listed policies", "apiKey", apiKey, "count", len(result))
 	types.SendSuccess(c, req.ID, result)
 }
 
 // handleGetPolicyByID retrieves a specific policy by ID
 func (ac *AdminController) handleGetPolicyByID(c *gin.Context, req types.PaymasterJSONRPCRequest, apiKey string) {
 	var params struct {
-		PolicyID string `json:"policy_id"`
+		PolicyID *int64 `json:"policy_id"`
 	}
 
 	if err := json.Unmarshal(req.Params, &params); err != nil {
@@ -86,16 +83,17 @@ func (ac *AdminController) handleGetPolicyByID(c *gin.Context, req types.Paymast
 		return
 	}
 
-	if params.PolicyID == "" {
+	if params.PolicyID == nil {
 		types.SendError(c, req.ID, types.InvalidParamsCode, "policy_id is required")
 		return
 	}
 
-	policyID, err := strconv.ParseInt(params.PolicyID, 10, 64)
-	if err != nil {
-		types.SendError(c, req.ID, types.InvalidParamsCode, "Invalid policy_id format")
+	if *params.PolicyID < 0 {
+		types.SendError(c, req.ID, types.InvalidParamsCode, "policy_id must be positive")
 		return
 	}
+
+	policyID := *params.PolicyID
 
 	policy, err := ac.policyOrm.GetByAPIKeyAndPolicyID(c.Request.Context(), apiKey, policyID)
 	if err != nil {
@@ -109,21 +107,21 @@ func (ac *AdminController) handleGetPolicyByID(c *gin.Context, req types.Paymast
 	}
 
 	result := types.PolicyResponse{
-		PolicyID:   strconv.FormatInt(policy.PolicyID, 10),
+		PolicyID:   policy.PolicyID,
 		PolicyName: policy.PolicyName,
 		Limits:     policy.Limits,
 		CreatedAt:  policy.CreatedAt.Format("2006-01-02T15:04:05Z"),
 		UpdatedAt:  policy.UpdatedAt.Format("2006-01-02T15:04:05Z"),
 	}
 
-	log.Debug("Retrieved policy", "policyID", policyID, "apiKey", apiKey)
+	log.Debug("Retrieved policy", "apiKey", apiKey, "policyID", policyID, "policyName", policy.PolicyName, "limits", policy.Limits)
 	types.SendSuccess(c, req.ID, result)
 }
 
 // handleCreatePolicy creates a new policy
 func (ac *AdminController) handleCreatePolicy(c *gin.Context, req types.PaymasterJSONRPCRequest, apiKey string) {
 	var params struct {
-		PolicyID   string           `json:"policy_id"`
+		PolicyID   *int64           `json:"policy_id"`
 		PolicyName string           `json:"policy_name"`
 		Limits     orm.PolicyLimits `json:"limits"`
 	}
@@ -133,24 +131,25 @@ func (ac *AdminController) handleCreatePolicy(c *gin.Context, req types.Paymaste
 		return
 	}
 
-	if params.PolicyID == "" {
+	if params.PolicyID == nil {
 		types.SendError(c, req.ID, types.InvalidParamsCode, "policy_id is required")
 		return
 	}
+
+	if *params.PolicyID < 0 {
+		types.SendError(c, req.ID, types.InvalidParamsCode, "policy_id must be positive")
+		return
+	}
+
+	policyID := *params.PolicyID
 
 	if params.PolicyName == "" {
 		types.SendError(c, req.ID, types.InvalidParamsCode, "policy_name is required")
 		return
 	}
 
-	policyID, err := strconv.ParseInt(params.PolicyID, 10, 64)
-	if err != nil {
-		types.SendError(c, req.ID, types.InvalidParamsCode, "Invalid policy_id format")
-		return
-	}
-
 	// Validate limits
-	if err = ac.validatePolicyLimits(&params.Limits); err != nil {
+	if err := ac.validatePolicyLimits(&params.Limits); err != nil {
 		types.SendError(c, req.ID, types.PolicyValidationErrorCode, "Invalid limits: "+err.Error())
 		return
 	}
@@ -162,8 +161,7 @@ func (ac *AdminController) handleCreatePolicy(c *gin.Context, req types.Paymaste
 		Limits:     params.Limits,
 	}
 
-	err = ac.policyOrm.Create(c.Request.Context(), newPolicy)
-	if err != nil {
+	if err := ac.policyOrm.Create(c.Request.Context(), newPolicy); err != nil {
 		log.Error("Failed to create policy", "error", err, "apiKey", apiKey)
 		types.SendError(c, req.ID, types.InternalServerError, "Failed to create policy")
 		return
@@ -174,14 +172,14 @@ func (ac *AdminController) handleCreatePolicy(c *gin.Context, req types.Paymaste
 		Message: "Policy created successfully",
 	}
 
-	log.Info("Policy created", "policyID", policyID, "apiKey", apiKey, "policyName", params.PolicyName)
+	log.Info("Policy created", "apiKey", apiKey, "policyID", policyID, "policyName", params.PolicyName, "limits", params.Limits)
 	types.SendSuccess(c, req.ID, result)
 }
 
 // handleUpdatePolicy updates an existing policy
 func (ac *AdminController) handleUpdatePolicy(c *gin.Context, req types.PaymasterJSONRPCRequest, apiKey string) {
 	var params struct {
-		PolicyID   string            `json:"policy_id"`
+		PolicyID   *int64            `json:"policy_id"`
 		PolicyName *string           `json:"policy_name,omitempty"`
 		Limits     *orm.PolicyLimits `json:"limits,omitempty"`
 	}
@@ -191,28 +189,28 @@ func (ac *AdminController) handleUpdatePolicy(c *gin.Context, req types.Paymaste
 		return
 	}
 
-	if params.PolicyID == "" {
+	if params.PolicyID == nil {
 		types.SendError(c, req.ID, types.InvalidParamsCode, "policy_id is required")
 		return
 	}
 
-	policyID, err := strconv.ParseInt(params.PolicyID, 10, 64)
-	if err != nil {
-		types.SendError(c, req.ID, types.InvalidParamsCode, "Invalid policy_id format")
+	if *params.PolicyID < 0 {
+		types.SendError(c, req.ID, types.InvalidParamsCode, "policy_id must be positive")
 		return
 	}
 
+	policyID := *params.PolicyID
+
 	// Validate limits if provided
 	if params.Limits != nil {
-		if err = ac.validatePolicyLimits(params.Limits); err != nil {
+		if err := ac.validatePolicyLimits(params.Limits); err != nil {
 			types.SendError(c, req.ID, types.PolicyValidationErrorCode, "Invalid limits: "+err.Error())
 			return
 		}
 	}
 
 	// Check if policy exists
-	_, err = ac.policyOrm.GetByAPIKeyAndPolicyID(c.Request.Context(), apiKey, policyID)
-	if err != nil {
+	if _, err := ac.policyOrm.GetByAPIKeyAndPolicyID(c.Request.Context(), apiKey, policyID); err != nil {
 		if err == gorm.ErrRecordNotFound {
 			types.SendError(c, req.ID, types.PolicyNotFoundCode, "Policy not found")
 			return
@@ -229,7 +227,7 @@ func (ac *AdminController) handleUpdatePolicy(c *gin.Context, req types.Paymaste
 	}
 	if params.Limits != nil {
 		var limitsJSON []byte
-		limitsJSON, err = json.Marshal(*params.Limits)
+		limitsJSON, err := json.Marshal(*params.Limits)
 		if err != nil {
 			types.SendError(c, req.ID, types.InternalErrorCode, "Failed to serialize limits")
 			return
@@ -243,8 +241,7 @@ func (ac *AdminController) handleUpdatePolicy(c *gin.Context, req types.Paymaste
 	}
 
 	// Perform update
-	err = ac.policyOrm.Update(c.Request.Context(), apiKey, policyID, updates)
-	if err != nil {
+	if err := ac.policyOrm.Update(c.Request.Context(), apiKey, policyID, updates); err != nil {
 		log.Error("Failed to update policy", "error", err, "apiKey", apiKey, "policyID", policyID)
 		types.SendError(c, req.ID, types.InternalServerError, "Failed to update policy")
 		return
@@ -255,14 +252,14 @@ func (ac *AdminController) handleUpdatePolicy(c *gin.Context, req types.Paymaste
 		Message: "Policy updated successfully",
 	}
 
-	log.Info("Policy updated", "policyID", policyID, "apiKey", apiKey, "updates", updates)
+	log.Info("Policy updated", "apiKey", apiKey, "policyID", policyID, "updates", updates)
 	types.SendSuccess(c, req.ID, result)
 }
 
 // handleDeletePolicy deletes a policy
 func (ac *AdminController) handleDeletePolicy(c *gin.Context, req types.PaymasterJSONRPCRequest, apiKey string) {
 	var params struct {
-		PolicyID string `json:"policy_id"`
+		PolicyID *int64 `json:"policy_id"`
 	}
 
 	if err := json.Unmarshal(req.Params, &params); err != nil {
@@ -270,20 +267,20 @@ func (ac *AdminController) handleDeletePolicy(c *gin.Context, req types.Paymaste
 		return
 	}
 
-	if params.PolicyID == "" {
+	if params.PolicyID == nil {
 		types.SendError(c, req.ID, types.InvalidParamsCode, "policy_id is required")
 		return
 	}
 
-	policyID, err := strconv.ParseInt(params.PolicyID, 10, 64)
-	if err != nil {
-		types.SendError(c, req.ID, types.InvalidParamsCode, "Invalid policy_id format")
+	if *params.PolicyID < 0 {
+		types.SendError(c, req.ID, types.InvalidParamsCode, "policy_id must be positive")
 		return
 	}
 
+	policyID := *params.PolicyID
+
 	// Check if policy exists
-	_, err = ac.policyOrm.GetByAPIKeyAndPolicyID(c.Request.Context(), apiKey, policyID)
-	if err != nil {
+	if _, err := ac.policyOrm.GetByAPIKeyAndPolicyID(c.Request.Context(), apiKey, policyID); err != nil {
 		if err == gorm.ErrRecordNotFound {
 			types.SendError(c, req.ID, types.PolicyNotFoundCode, "Policy not found")
 			return
@@ -294,8 +291,7 @@ func (ac *AdminController) handleDeletePolicy(c *gin.Context, req types.Paymaste
 	}
 
 	// Perform deletion (soft delete)
-	err = ac.policyOrm.Delete(c.Request.Context(), apiKey, policyID)
-	if err != nil {
+	if err := ac.policyOrm.Delete(c.Request.Context(), apiKey, policyID); err != nil {
 		log.Error("Failed to delete policy", "error", err, "apiKey", apiKey, "policyID", policyID)
 		types.SendError(c, req.ID, types.InternalServerError, "Failed to delete policy")
 		return
@@ -306,7 +302,7 @@ func (ac *AdminController) handleDeletePolicy(c *gin.Context, req types.Paymaste
 		Message: "Policy deleted successfully",
 	}
 
-	log.Info("Policy deleted", "policyID", policyID, "apiKey", apiKey)
+	log.Info("Policy deleted", "apiKey", apiKey, "policyID", policyID)
 	types.SendSuccess(c, req.ID, result)
 }
 
