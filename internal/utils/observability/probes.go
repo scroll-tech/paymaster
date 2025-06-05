@@ -1,3 +1,4 @@
+// Package observability provides observability API for the Scroll paymaster service.
 package observability
 
 import (

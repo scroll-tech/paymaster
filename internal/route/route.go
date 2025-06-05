@@ -1,3 +1,4 @@
+// Package route provides the HTTP routes for the Scroll paymaster service.
 package route
 
 import (
@@ -33,5 +34,5 @@ func Route(router *gin.Engine, conf *config.Config) {
 }
 
 func registerRootRoutes(rootGroup *gin.RouterGroup, conf *config.Config) {
-	rootGroup.POST("/", middleware.AuthMiddleware(conf), middleware.RateLimiter(conf), controller.PaymasterCtl.Paymaster)
+	rootGroup.POST("/", middleware.AuthMiddleware(conf), middleware.RateLimiter(conf), controller.UnifiedHandler)
 }

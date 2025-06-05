@@ -15,7 +15,7 @@ import (
 
 const (
 	// GolangCIVersion to be used for linting.
-	GolangCIVersion = "github.com/golangci/golangci-lint/cmd/golangci-lint@v1.52.2"
+	GolangCIVersion = "github.com/golangci/golangci-lint/cmd/golangci-lint@v1.61.0"
 )
 
 // GOBIN environment variable.

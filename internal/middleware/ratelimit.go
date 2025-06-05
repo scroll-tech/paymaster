@@ -1,3 +1,4 @@
+// Package middleware provides middleware functions for the Scroll paymaster service.
 package middleware
 
 import (

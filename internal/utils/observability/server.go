@@ -1,3 +1,4 @@
+// Package observability initializes the observability server for the Scroll paymaster service.
 package observability
 
 import (
@@ -6,10 +7,10 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/ethereum/go-ethereum/log"
 	"github.com/gin-contrib/pprof"
 	"github.com/gin-gonic/gin"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
-	"github.com/scroll-tech/go-ethereum/log"
 	"github.com/urfave/cli/v2"
 
 	"github.com/scroll-tech/paymaster/internal/utils"

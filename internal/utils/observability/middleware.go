@@ -1,3 +1,4 @@
+// Package observability registers the gin metric for the Scroll paymaster service.
 package observability
 
 import (

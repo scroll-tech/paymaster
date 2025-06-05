@@ -1,3 +1,4 @@
+// Package types provides common types and response structures for the Scroll paymaster service.
 package types
 
 import (
@@ -12,7 +13,7 @@ const (
 	// InternalServerError shows a fatal error in the server
 	InternalServerError = 500
 
-	// JSON-RPC Standard Errors
+	// JSON-RPC Standard Errors (-32700 to -32600)
 
 	// ParseErrorCode indicates a JSON parsing error
 	ParseErrorCode = -32700
@@ -23,18 +24,31 @@ const (
 	// InvalidParamsCode indicates that the parameters provided to the method are invalid
 	InvalidParamsCode = -32602
 
-	// Custom Paymaster Errors
+	// Paymaster Module Errors (-32000 to -32099)
 
 	// UnauthorizedErrorCode indicates that the user is not authorized to perform the action
 	UnauthorizedErrorCode = -32000
+	// InternalErrorCode indicates an internal server error
+	InternalErrorCode = -32001
 	// UnsupportedChainIDCode indicates that the chain ID is not supported by the paymaster
-	UnsupportedChainIDCode = -32001
+	UnsupportedChainIDCode = -32002
 	// UnsupportedEntryPointCode indicates that the entry point is not supported by the paymaster
-	UnsupportedEntryPointCode = -32002
+	UnsupportedEntryPointCode = -32003
 	// PaymasterDataGenErrorCode indicates an error in generating paymaster data
-	PaymasterDataGenErrorCode = -32003
+	PaymasterDataGenErrorCode = -32004
 	// UnsupportedTokenErrorCode indicates that the token is not supported by the paymaster
-	UnsupportedTokenErrorCode = -32004
+	UnsupportedTokenErrorCode = -32005
+	// QuotaExceededErrorCode indicates that the quota for the paymaster has been exceeded
+	QuotaExceededErrorCode = -32006
+
+	// Admin/Policy Module Errors (-32100 to -32199)
+
+	// PolicyNotFoundCode indicates that the requested policy was not found
+	PolicyNotFoundCode = -32100
+	// PolicyAlreadyExistsCode indicates that the policy already exists
+	PolicyAlreadyExistsCode = -32101
+	// PolicyValidationErrorCode indicates that the policy data is invalid
+	PolicyValidationErrorCode = -32102
 
 	// JSONRPCVersion is the version of JSON-RPC used
 	JSONRPCVersion = "2.0"

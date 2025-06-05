@@ -14,5 +14,8 @@ fmt:
 build:
 	go build -o $(PWD)/build/bin/paymaster ./cmd/
 
+test:
+	go test -v -race -coverprofile=coverage.out ./...
+
 docker:
 	docker build --platform linux/amd64 -t scrolltech/paymaster:${IMAGE_VERSION} ./ -f ./build/paymaster.Dockerfile

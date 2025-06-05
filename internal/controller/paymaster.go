@@ -1,7 +1,9 @@
+// Package controller provides the ERC-7677 paymaster controller for handling JSON-RPC requests.
 package controller
 
 import (
 	"bytes"
+	"context"
 	"crypto/ecdsa"
 	"encoding/hex"
 	"encoding/json"
@@ -9,15 +11,19 @@ import (
 	"io"
 	"math/big"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
+	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/common/hexutil"
+	"github.com/ethereum/go-ethereum/crypto"
+	"github.com/ethereum/go-ethereum/log"
 	"github.com/gin-gonic/gin"
-	"github.com/scroll-tech/go-ethereum/common"
-	"github.com/scroll-tech/go-ethereum/common/hexutil"
-	"github.com/scroll-tech/go-ethereum/crypto"
-	"github.com/scroll-tech/go-ethereum/log"
+	"gorm.io/gorm"
+
 	"github.com/scroll-tech/paymaster/internal/config"
+	"github.com/scroll-tech/paymaster/internal/orm"
 	"github.com/scroll-tech/paymaster/internal/types"
 )
 
@@ -31,12 +37,14 @@ var emptyAddr = common.Address{}
 
 // PaymasterController the controller of paymaster
 type PaymasterController struct {
-	cfg       *config.Config
-	signerKey *ecdsa.PrivateKey
+	cfg              *config.Config
+	signerKey        *ecdsa.PrivateKey
+	policyOrm        *orm.Policy
+	userOperationOrm *orm.UserOperation
 }
 
 // NewPaymasterController creates and initializes a new PaymasterController.
-func NewPaymasterController(cfg *config.Config) *PaymasterController {
+func NewPaymasterController(cfg *config.Config, db *gorm.DB) *PaymasterController {
 	if cfg.APIKey == "" {
 		log.Crit("API key is required")
 	}
@@ -54,29 +62,20 @@ func NewPaymasterController(cfg *config.Config) *PaymasterController {
 	log.Info("Paymaster signer initialized", "address", crypto.PubkeyToAddress(signerKey.PublicKey).Hex())
 
 	return &PaymasterController{
-		cfg:       cfg,
-		signerKey: signerKey,
+		cfg:              cfg,
+		signerKey:        signerKey,
+		policyOrm:        orm.NewPolicy(db),
+		userOperationOrm: orm.NewUserOperation(db),
 	}
 }
 
-// Paymaster the handler of paymaster
-func (pc *PaymasterController) Paymaster(c *gin.Context) {
-	var req types.PaymasterJSONRPCRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		types.SendError(c, nil, types.ParseErrorCode, "Parse error")
-		return
-	}
-
-	if req.JSONRPC != types.JSONRPCVersion {
-		types.SendError(c, req.ID, types.InvalidRequestCode, "Invalid JSON-RPC version")
-		return
-	}
-
+// handlePaymasterMethod handles JSON-RPC requests for paymaster methods.
+func (pc *PaymasterController) handlePaymasterMethod(c *gin.Context, req types.PaymasterJSONRPCRequest, apiKey string) {
 	switch req.Method {
 	case "pm_getPaymasterStubData":
-		pc.handleGetPaymasterStubData(c, req)
+		pc.handleGetPaymasterStubData(c, req, apiKey)
 	case "pm_getPaymasterData":
-		pc.handleGetPaymasterData(c, req)
+		pc.handleGetPaymasterData(c, req, apiKey)
 	default:
 		log.Debug("Method not found", "method", req.Method)
 		types.SendError(c, req.ID, types.MethodNotFoundCode, "Method not found: "+req.Method)
@@ -84,8 +83,8 @@ func (pc *PaymasterController) Paymaster(c *gin.Context) {
 }
 
 // handleGetPaymasterStubData implements the logic for pm_getPaymasterStubData.
-func (pc *PaymasterController) handleGetPaymasterStubData(c *gin.Context, req types.PaymasterJSONRPCRequest) {
-	params, tokenAddr, rpcErr := pc.parseERC7677Params(req.Params)
+func (pc *PaymasterController) handleGetPaymasterStubData(c *gin.Context, req types.PaymasterJSONRPCRequest, apiKey string) {
+	params, tokenAddr, policyID, rpcErr := pc.parseERC7677Params(req.Params)
 	if rpcErr != nil {
 		types.SendError(c, req.ID, rpcErr.Code, rpcErr.Message)
 		return
@@ -97,6 +96,25 @@ func (pc *PaymasterController) handleGetPaymasterStubData(c *gin.Context, req ty
 		log.Error("Failed to build and sign paymaster data for stub", "error", err)
 		types.SendError(c, req.ID, types.PaymasterDataGenErrorCode, "Failed to generate paymaster data")
 		return
+	}
+
+	// Check quota for ETH payments only
+	if tokenAddr == emptyAddr {
+		estimatedWei := pc.calculateEstimatedWei(params, verificationGasLimit, paymasterPostOpGasLimit)
+
+		// Check quota first
+		if err = pc.checkQuota(c.Request.Context(), apiKey, policyID, params.Sender, estimatedWei); err != nil {
+			log.Error("Quota check failed", "error", err, "sender", params.Sender.Hex(), "nonce", params.Nonce.String(), "policy_id", policyID)
+			types.SendError(c, req.ID, types.QuotaExceededErrorCode, "Quota exceeded")
+			return
+		}
+
+		// Create or update record
+		if err = pc.createOrUpdateRecord(c.Request.Context(), apiKey, policyID, params.Sender, params.Nonce.ToInt(), estimatedWei, orm.UserOperationStatusStubDataProvided); err != nil {
+			log.Error("Failed to create or update operation record", "error", err, "sender", params.Sender.Hex(), "nonce", params.Nonce.String(), "policy_id", policyID)
+			types.SendError(c, req.ID, types.InternalErrorCode, "Operation failed")
+			return
+		}
 	}
 
 	stubResult := types.GetPaymasterStubDataResultV7{
@@ -111,19 +129,38 @@ func (pc *PaymasterController) handleGetPaymasterStubData(c *gin.Context, req ty
 }
 
 // handleGetPaymasterData implements the logic for pm_getPaymasterData.
-func (pc *PaymasterController) handleGetPaymasterData(c *gin.Context, req types.PaymasterJSONRPCRequest) {
-	params, tokenAddr, rpcErr := pc.parseERC7677Params(req.Params)
+func (pc *PaymasterController) handleGetPaymasterData(c *gin.Context, req types.PaymasterJSONRPCRequest, apiKey string) {
+	params, tokenAddr, policyID, rpcErr := pc.parseERC7677Params(req.Params)
 	if rpcErr != nil {
 		types.SendError(c, req.ID, rpcErr.Code, rpcErr.Message)
 		return
 	}
 
 	// Generate signed paymaster data
-	paymasterData, _, _, err := pc.buildAndSignPaymasterData(params, tokenAddr)
+	paymasterData, verificationGasLimit, paymasterPostOpGasLimit, err := pc.buildAndSignPaymasterData(params, tokenAddr)
 	if err != nil {
 		log.Error("Failed to build and sign paymaster data", "error", err)
 		types.SendError(c, req.ID, types.PaymasterDataGenErrorCode, "Failed to generate paymaster data")
 		return
+	}
+
+	// Check quota and update operation record for ETH payments only
+	if tokenAddr == emptyAddr {
+		finalWei := pc.calculateEstimatedWei(params, verificationGasLimit, paymasterPostOpGasLimit)
+
+		// Check quota first
+		if err = pc.checkQuota(c.Request.Context(), apiKey, policyID, params.Sender, finalWei); err != nil {
+			log.Error("Quota check failed", "error", err, "sender", params.Sender.Hex(), "nonce", params.Nonce.String(), "policy_id", policyID)
+			types.SendError(c, req.ID, types.QuotaExceededErrorCode, "Quota exceeded")
+			return
+		}
+
+		// Create or update record
+		if err = pc.createOrUpdateRecord(c.Request.Context(), apiKey, policyID, params.Sender, params.Nonce.ToInt(), finalWei, orm.UserOperationStatusPaymasterDataProvided); err != nil {
+			log.Error("Failed to create or update operation record", "error", err, "sender", params.Sender.Hex(), "nonce", params.Nonce.String(), "policy_id", policyID)
+			types.SendError(c, req.ID, types.InternalErrorCode, "Operation failed")
+			return
+		}
 	}
 
 	result := types.GetPaymasterDataResultV7{
@@ -135,70 +172,174 @@ func (pc *PaymasterController) handleGetPaymasterData(c *gin.Context, req types.
 	types.SendSuccess(c, req.ID, result)
 }
 
-func (pc *PaymasterController) parseERC7677Params(rawParams json.RawMessage) (*types.PaymasterUserOperationV7, common.Address, *types.RPCError) {
+// checkQuota verifies if the operation would exceed quota limits
+func (pc *PaymasterController) checkQuota(ctx context.Context, apiKey string, policyID int64, sender common.Address, weiAmount *big.Int) error {
+	// Get policy to check limits
+	policy, err := pc.policyOrm.GetByAPIKeyAndPolicyID(ctx, apiKey, policyID)
+	if err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return fmt.Errorf("policy not found: %d", policyID)
+		}
+		return fmt.Errorf("failed to get policy: %w", err)
+	}
+
+	// Get current usage
+	currentUsageWei, err := pc.userOperationOrm.GetWalletUsage(ctx, apiKey, sender.Hex(), policy.Limits.TimeWindowHours)
+	if err != nil {
+		return fmt.Errorf("failed to get current usage: %w", err)
+	}
+
+	// Parse max limit from ETH to wei
+	maxEthFloat, ok := new(big.Float).SetPrec(256).SetString(policy.Limits.MaxEthPerWalletPerWindow)
+	if !ok {
+		return fmt.Errorf("invalid max ETH limit: %s", policy.Limits.MaxEthPerWalletPerWindow)
+	}
+
+	// Convert ETH to wei (18 decimals)
+	weiPerEth := new(big.Int).Exp(big.NewInt(10), big.NewInt(18), nil)
+	maxLimitWei, accuracy := new(big.Float).Mul(maxEthFloat, new(big.Float).SetInt(weiPerEth)).Int(nil)
+	if accuracy != big.Exact {
+		return fmt.Errorf("invalid max ETH limit: original=%s, converted_wei=%s, accuracy=%d", policy.Limits.MaxEthPerWalletPerWindow, maxLimitWei.String(), accuracy)
+	}
+
+	// Check if new operation would exceed limit
+	currentUsage := big.NewInt(currentUsageWei)
+	newTotal := new(big.Int).Add(currentUsage, weiAmount)
+
+	if newTotal.Cmp(maxLimitWei) > 0 {
+		log.Debug("Quota exceeded", "sender", sender.Hex(), "current_usage_wei", currentUsage.String(), "estimated_wei", weiAmount.String(), "new_total_wei", newTotal.String(), "max_limit_wei", maxLimitWei.String(), "max_limit_eth", policy.Limits.MaxEthPerWalletPerWindow)
+
+		// Convert back to ETH for user-friendly error message
+		currentUsageEth := new(big.Float).Quo(new(big.Float).SetInt(currentUsage), new(big.Float).SetInt(weiPerEth))
+		newTotalEth := new(big.Float).Quo(new(big.Float).SetInt(newTotal), new(big.Float).SetInt(weiPerEth))
+
+		return fmt.Errorf("quota exceeded: current usage %.6f ETH + new operation would total %.6f ETH, limit is %s ETH", currentUsageEth, newTotalEth, policy.Limits.MaxEthPerWalletPerWindow)
+	}
+
+	return nil
+}
+
+// createOrUpdateRecord creates or updates the operation record
+func (pc *PaymasterController) createOrUpdateRecord(ctx context.Context, apiKey string, policyID int64, sender common.Address, nonce *big.Int, weiAmount *big.Int, status orm.UserOperationStatus) error {
+	userOp := &orm.UserOperation{
+		APIKey:    apiKey,
+		PolicyID:  policyID,
+		Sender:    sender.Hex(),
+		Nonce:     nonce.Int64(),
+		WeiAmount: weiAmount.Int64(),
+		Status:    status,
+	}
+
+	err := pc.userOperationOrm.CreateOrUpdate(ctx, userOp)
+	if err != nil {
+		return fmt.Errorf("failed to create or update user operation: %w", err)
+	}
+
+	log.Debug("Operation record updated", "sender", sender.Hex(), "nonce", nonce.String(), "wei_amount", weiAmount.String(), "policy_id", policyID, "status", status)
+
+	return nil
+}
+
+// calculateEstimatedWei calculates the estimated wei cost for the user operation
+func (pc *PaymasterController) calculateEstimatedWei(userOp *types.PaymasterUserOperationV7, paymasterVerificationGas, paymasterPostOpGas *big.Int) *big.Int {
+	// Calculate total gas cost
+	verificationGas := userOp.VerificationGasLimit.ToInt()
+	callGas := userOp.CallGasLimit.ToInt()
+	preVerificationGas := userOp.PreVerificationGas.ToInt()
+	maxFeePerGas := userOp.MaxFeePerGas.ToInt()
+
+	// Total gas = userOp gas + paymaster gas
+	totalGas := new(big.Int)
+	totalGas.Add(totalGas, verificationGas)
+	totalGas.Add(totalGas, callGas)
+	totalGas.Add(totalGas, preVerificationGas)
+	totalGas.Add(totalGas, paymasterVerificationGas)
+	totalGas.Add(totalGas, paymasterPostOpGas)
+
+	// Total cost = totalGas * maxFeePerGas
+	return new(big.Int).Mul(totalGas, maxFeePerGas)
+}
+
+func (pc *PaymasterController) parseERC7677Params(rawParams json.RawMessage) (*types.PaymasterUserOperationV7, common.Address, int64, *types.RPCError) {
 	var p []json.RawMessage
 	if err := json.Unmarshal(rawParams, &p); err != nil || len(p) != 4 { // Need exactly 4 elements for ERC-7677
 		log.Debug("Invalid params structure", "params", string(rawParams), "error", err, "length", len(p))
-		return nil, common.Address{}, &types.RPCError{Code: types.InvalidParamsCode, Message: "Invalid params structure: expected an array of exactly 4 elements including context"}
+		return nil, common.Address{}, 0, &types.RPCError{Code: types.InvalidParamsCode, Message: "Invalid params structure: expected an array of exactly 4 elements including context"}
 	}
 
 	var userOp *types.PaymasterUserOperationV7
 	if err := json.Unmarshal(p[0], &userOp); err != nil {
 		log.Debug("Invalid userOp param", "userOp", string(p[0]), "error", err)
-		return nil, common.Address{}, &types.RPCError{Code: types.InvalidParamsCode, Message: "Invalid userOp param"}
+		return nil, common.Address{}, 0, &types.RPCError{Code: types.InvalidParamsCode, Message: "Invalid userOp param"}
 	}
 
 	var entryPoint string
 	if err := json.Unmarshal(p[1], &entryPoint); err != nil {
 		log.Debug("Invalid entryPoint param", "entryPoint", entryPoint, "error", err)
-		return nil, common.Address{}, &types.RPCError{Code: types.InvalidParamsCode, Message: "Invalid entryPoint param"}
+		return nil, common.Address{}, 0, &types.RPCError{Code: types.InvalidParamsCode, Message: "Invalid entryPoint param"}
 	}
 
 	if !strings.EqualFold(entryPoint, entryPointV7Address) {
 		log.Debug("Unsupported EntryPoint version", "entryPoint", entryPoint, "expected", entryPointV7Address)
-		return nil, common.Address{}, &types.RPCError{Code: types.UnsupportedEntryPointCode, Message: "Unsupported EntryPoint version. Only v0.7 is supported (" + entryPointV7Address + ")."}
+		return nil, common.Address{}, 0, &types.RPCError{Code: types.UnsupportedEntryPointCode, Message: "Unsupported EntryPoint version. Only v0.7 is supported (" + entryPointV7Address + ")."}
 	}
 
 	var chainIDStr string
 	if err := json.Unmarshal(p[2], &chainIDStr); err != nil {
 		log.Debug("Invalid chainId param", "chainId", string(p[2]), "error", err)
-		return nil, common.Address{}, &types.RPCError{Code: types.InvalidParamsCode, Message: "Invalid chainId param"}
+		return nil, common.Address{}, 0, &types.RPCError{Code: types.InvalidParamsCode, Message: "Invalid chainId param"}
 	}
 
 	inputChainID, success := new(big.Int).SetString(strings.TrimPrefix(chainIDStr, "0x"), 16)
 	if !success {
 		log.Debug("Failed to parse chainId", "chainId", chainIDStr)
-		return nil, common.Address{}, &types.RPCError{Code: types.InvalidParamsCode, Message: "Invalid chainId format"}
+		return nil, common.Address{}, 0, &types.RPCError{Code: types.InvalidParamsCode, Message: "Invalid chainId format"}
 	}
 
 	if inputChainID.Cmp(big.NewInt(pc.cfg.ChainID)) != 0 {
 		log.Debug("Unsupported chainId", "chainId", inputChainID.String(), "expected", pc.cfg.ChainID)
-		return nil, common.Address{}, &types.RPCError{Code: types.UnsupportedChainIDCode, Message: "Unsupported chainId. Only " + fmt.Sprint(pc.cfg.ChainID) + " is supported."}
+		return nil, common.Address{}, 0, &types.RPCError{Code: types.UnsupportedChainIDCode, Message: "Unsupported chainId. Only " + fmt.Sprint(pc.cfg.ChainID) + " is supported."}
 	}
 
 	type ERC7677Context struct {
-		Token string `json:"token"`
+		Token    string `json:"token"`
+		PolicyID string `json:"policy_id"`
 	}
 
 	var context *ERC7677Context
 	if err := json.Unmarshal(p[3], &context); err != nil {
 		log.Debug("Invalid context param", "context", string(p[3]), "error", err)
-		return nil, common.Address{}, &types.RPCError{Code: types.InvalidParamsCode, Message: "Invalid context param"}
+		return nil, common.Address{}, 0, &types.RPCError{Code: types.InvalidParamsCode, Message: "Invalid context param"}
 	}
 
-	// Return the result of ETH payment
-	if context == nil || context.Token == "" {
-		return userOp, common.Address{}, nil
+	// Validate required context fields
+	if context == nil {
+		log.Debug("Missing context")
+		return nil, common.Address{}, 0, &types.RPCError{Code: types.InvalidParamsCode, Message: "Context is required"}
 	}
 
-	tokenAddr := common.HexToAddress(context.Token)
-	if tokenAddr != emptyAddr && !strings.EqualFold(tokenAddr.Hex(), pc.cfg.USDTAddress.Hex()) {
-		log.Debug("Unsupported token", "provided", tokenAddr.Hex(), "expected", pc.cfg.USDTAddress.Hex())
-		return nil, common.Address{}, &types.RPCError{Code: types.UnsupportedTokenErrorCode, Message: "Unsupported token. Only " + pc.cfg.USDTAddress.Hex() + " is supported."}
+	if context.PolicyID == "" {
+		log.Debug("Missing policy_id in context")
+		return nil, common.Address{}, 0, &types.RPCError{Code: types.InvalidParamsCode, Message: "policy_id is required in context"}
 	}
 
-	// Return the token address
-	return userOp, tokenAddr, nil
+	policyID, err := strconv.ParseInt(context.PolicyID, 10, 64)
+	if err != nil {
+		log.Debug("Invalid policy_id format", "policy_id", context.PolicyID, "error", err)
+		return nil, common.Address{}, 0, &types.RPCError{Code: types.InvalidParamsCode, Message: "Invalid policy_id format"}
+	}
+
+	// Handle token address
+	tokenAddr := common.Address{}
+	if context.Token != "" {
+		tokenAddr = common.HexToAddress(context.Token)
+		if tokenAddr != emptyAddr && !strings.EqualFold(tokenAddr.Hex(), pc.cfg.USDTAddress.Hex()) {
+			log.Debug("Unsupported token", "provided", tokenAddr.Hex(), "expected", pc.cfg.USDTAddress.Hex())
+			return nil, common.Address{}, 0, &types.RPCError{Code: types.UnsupportedTokenErrorCode, Message: "Unsupported token. Only " + pc.cfg.USDTAddress.Hex() + " is supported."}
+		}
+	}
+
+	return userOp, tokenAddr, policyID, nil
 }
 
 // getETHUSDTExchangeRate fetches ETH/USDT prices from Chainlink with a 5% premium.

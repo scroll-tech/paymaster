@@ -9,5 +9,11 @@
         "https://eth-mainnet.public.blastapi.io",
         "https://ethereum.publicnode.com",
         "https://eth.drpc.org"
-    ]
+    ],
+    "db_config": {
+        "driver_name": "postgres",
+        "dsn": "postgres://localhost/scroll?sslmode=disable",
+        "maxOpenNum": 100,
+        "maxIdleNum": 20
+    }
 }

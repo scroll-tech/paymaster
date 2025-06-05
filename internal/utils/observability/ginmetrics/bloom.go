@@ -1,3 +1,4 @@
+// Package ginmetrics provides a simple bloom filter implementation for use in Gin middleware.
 package ginmetrics
 
 import (
@@ -49,7 +50,7 @@ type simpleHash struct {
 }
 
 func (s *simpleHash) hash(value string) uint {
-	var result uint = 0
+	var result uint
 	for i := 0; i < len(value); i++ {
 		result = result*s.Seed + uint(value[i])
 	}

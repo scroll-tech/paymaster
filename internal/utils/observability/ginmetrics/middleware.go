@@ -1,3 +1,4 @@
+// Package ginmetrics provides utilities for monitoring Gin web applications using Prometheus metrics.
 package ginmetrics
 
 import (

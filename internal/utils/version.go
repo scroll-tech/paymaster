@@ -1,3 +1,4 @@
+// Package utils provides versioning information for the Scroll paymaster service.
 package utils
 
 import (

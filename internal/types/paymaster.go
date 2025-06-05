@@ -1,10 +1,11 @@
+// Package types provides common types and response structures for the Scroll paymaster service.
 package types
 
 import (
 	"encoding/json"
 
-	"github.com/scroll-tech/go-ethereum/common"
-	"github.com/scroll-tech/go-ethereum/common/hexutil"
+	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/common/hexutil"
 )
 
 // PaymasterJSONRPCRequest represents a JSON-RPC request specific to the paymaster service.

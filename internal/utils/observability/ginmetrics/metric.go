@@ -1,3 +1,4 @@
+// Package ginmetrics provides a metric object for use in Gin middleware.
 package ginmetrics
 
 import (

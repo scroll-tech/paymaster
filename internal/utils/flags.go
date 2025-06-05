@@ -1,3 +1,4 @@
+// Package utils provides common flags for the Scroll paymaster service.
 package utils
 
 import (
@@ -21,6 +22,11 @@ var (
 		&MetricsEnabled,
 		&MetricsAddr,
 		&MetricsPort,
+
+		&DBFlag,
+		&DBMigrateFlag,
+		&DBRollBackFlag,
+		&DBResetFlag,
 	}
 	// ConfigFileFlag load json type config file.
 	ConfigFileFlag = cli.StringFlag{
@@ -92,5 +98,30 @@ var (
 		Usage:    "Metrics reporting server listening port.",
 		Category: "METRICS",
 		Value:    6060,
+	}
+
+	// DBFlag enable db operation.
+	DBFlag = cli.BoolFlag{
+		Name:  "db",
+		Usage: "Enable db operation.",
+		Value: false,
+	}
+	// DBMigrateFlag migrate db.
+	DBMigrateFlag = cli.BoolFlag{
+		Name:  "db.migrate",
+		Usage: "Migrate the database to the latest version.",
+		Value: false,
+	}
+	// DBRollBackFlag rollback db.
+	DBRollBackFlag = cli.Int64Flag{
+		Name:  "db.rollback",
+		Usage: "Roll back the database to a previous <version>.",
+		Value: 1000000, // Default value set to a very large number indicating no rollback.
+	}
+	// DBResetFlag reset db.
+	DBResetFlag = cli.BoolFlag{
+		Name:  "db.reset",
+		Usage: "Clean and reset database.",
+		Value: false,
 	}
 )

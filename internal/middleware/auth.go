@@ -1,10 +1,11 @@
+// Package middleware provides middleware functions for the Scroll paymaster service.
 package middleware
 
 import (
 	"strings"
 
+	"github.com/ethereum/go-ethereum/log"
 	"github.com/gin-gonic/gin"
-	"github.com/scroll-tech/go-ethereum/log"
 	"github.com/scroll-tech/paymaster/internal/config"
 	"github.com/scroll-tech/paymaster/internal/types"
 )

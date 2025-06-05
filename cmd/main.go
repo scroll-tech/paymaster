@@ -1,3 +1,4 @@
+// Package main implements the main entry point for the Scroll paymaster service.
 package main
 
 import (
@@ -14,14 +15,16 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ethereum/go-ethereum/log"
 	"github.com/gin-gonic/gin"
-	"github.com/scroll-tech/go-ethereum/log"
 	"github.com/urfave/cli/v2"
 
 	"github.com/scroll-tech/paymaster/internal/config"
 	"github.com/scroll-tech/paymaster/internal/controller"
+	"github.com/scroll-tech/paymaster/internal/orm/migrate"
 	"github.com/scroll-tech/paymaster/internal/route"
 	"github.com/scroll-tech/paymaster/internal/utils"
+	"github.com/scroll-tech/paymaster/internal/utils/database"
 	"github.com/scroll-tech/paymaster/internal/utils/observability"
 )
 
@@ -33,6 +36,25 @@ func action(ctx *cli.Context) error {
 		log.Crit("failed to load config file", "config file", cfgFile, "error", err)
 	}
 
+	// Create db instance.
+	db, err := database.InitDB(cfg.DBConfig)
+	if err != nil {
+		log.Crit("failed to connect to db", "err", err)
+	}
+
+	// db operation.
+	if ctx.Bool(utils.DBFlag.Name) {
+		if ctx.Bool(utils.DBMigrateFlag.Name) {
+			return migrate.Migrate(db)
+		}
+		if ctx.Bool(utils.DBResetFlag.Name) {
+			return migrate.ResetDB(db)
+		}
+		if ctx.IsSet(utils.DBRollBackFlag.Name) {
+			return migrate.Rollback(db, ctx.Int64(utils.DBRollBackFlag.Name))
+		}
+	}
+
 	// Perform RPC sanity check
 	if err = performRPCSanityCheck(cfg); err != nil {
 		log.Crit("RPC sanity check failed", "error", err)
@@ -41,7 +63,7 @@ func action(ctx *cli.Context) error {
 	observability.Server(ctx)
 
 	router := gin.New()
-	controller.InitAPI(cfg)
+	controller.InitAPI(cfg, db)
 	route.Route(router, cfg)
 	port := ctx.String(utils.HTTPPortFlag.Name)
 	srv := &http.Server{
@@ -181,7 +203,8 @@ func main() {
 	app.Flags = append(app.Flags, utils.CommonFlags...)
 	app.Commands = []*cli.Command{}
 	app.Before = func(ctx *cli.Context) error {
-		return utils.LogSetup(ctx)
+		utils.LogSetup(ctx)
+		return nil
 	}
 
 	if err := app.Run(os.Args); err != nil {
