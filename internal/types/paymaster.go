@@ -35,15 +35,17 @@ type RPCError struct {
 // PaymasterUserOperationV7 defines the UserOperation structure sent to paymaster methods (unsigned),
 // when the context implies an EntryPoint v0.7 interaction.
 type PaymasterUserOperationV7 struct {
-	Sender               common.Address `json:"sender"`
-	Nonce                hexutil.Big    `json:"nonce"`
-	InitCode             string         `json:"initCode"`
-	CallData             string         `json:"callData"`
-	CallGasLimit         hexutil.Big    `json:"callGasLimit"`
-	VerificationGasLimit hexutil.Big    `json:"verificationGasLimit"`
-	PreVerificationGas   hexutil.Big    `json:"preVerificationGas"`
-	MaxFeePerGas         hexutil.Big    `json:"maxFeePerGas"`
-	MaxPriorityFeePerGas hexutil.Big    `json:"maxPriorityFeePerGas"`
+	Sender                        common.Address `json:"sender"`
+	Nonce                         hexutil.Big    `json:"nonce"`
+	InitCode                      string         `json:"initCode"`
+	CallData                      string         `json:"callData"`
+	CallGasLimit                  hexutil.Big    `json:"callGasLimit"`
+	VerificationGasLimit          hexutil.Big    `json:"verificationGasLimit"`
+	PreVerificationGas            hexutil.Big    `json:"preVerificationGas"`
+	MaxFeePerGas                  hexutil.Big    `json:"maxFeePerGas"`
+	MaxPriorityFeePerGas          hexutil.Big    `json:"maxPriorityFeePerGas"`
+	PaymasterVerificationGasLimit *hexutil.Big   `json:"paymasterVerificationGasLimit,omitempty"`
+	PaymasterPostOpGasLimit       *hexutil.Big   `json:"paymasterPostOpGasLimit,omitempty"`
 }
 
 // GetPaymasterStubDataResultV7 is the result for pm_getPaymasterStubData (EntryPoint v0.7).

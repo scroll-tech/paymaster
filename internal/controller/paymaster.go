@@ -85,38 +85,40 @@ func (pc *PaymasterController) handleGetPaymasterStubData(c *gin.Context, req ty
 		return
 	}
 
-	// Generate signed paymaster data for stub
-	paymasterData, verificationGasLimit, paymasterPostOpGasLimit, err := pc.buildAndSignPaymasterData(params, tokenAddr)
-	if err != nil {
-		log.Error("Failed to build and sign paymaster data for stub", "error", err)
-		types.SendError(c, req.ID, types.PaymasterDataGenErrorCode, "Failed to generate paymaster data")
-		return
-	}
+	paymasterVerificationGasLimit, paymasterPostOpGasLimit := calculatePaymasterGasLimits(tokenAddr, pc.cfg.USDTAddress)
 
 	// Check quota for ETH payments only
 	if tokenAddr == emptyAddr {
-		estimatedWei := pc.calculateEstimatedWei(params, verificationGasLimit, paymasterPostOpGasLimit)
+		estimatedWei := pc.calculateEstimatedWei(params, paymasterVerificationGasLimit, paymasterPostOpGasLimit)
 
 		// Check quota first
-		if err = pc.checkQuota(c.Request.Context(), apiKey, policyID, params.Sender, estimatedWei); err != nil {
+		if err := pc.checkQuota(c.Request.Context(), apiKey, policyID, params.Sender, estimatedWei); err != nil {
 			log.Error("Quota check failed", "error", err, "sender", params.Sender.Hex(), "nonce", params.Nonce.String(), "policy_id", policyID)
 			types.SendError(c, req.ID, types.QuotaExceededErrorCode, "Quota exceeded")
 			return
 		}
 
 		// Create or update record
-		if err = pc.createOrUpdateRecord(c.Request.Context(), apiKey, policyID, params.Sender, params.Nonce.ToInt(), estimatedWei, orm.UserOperationStatusPaymasterStubDataProvided); err != nil {
+		if err := pc.createOrUpdateRecord(c.Request.Context(), apiKey, policyID, params.Sender, params.Nonce.ToInt(), estimatedWei, orm.UserOperationStatusPaymasterStubDataProvided); err != nil {
 			log.Error("Failed to create or update operation record", "error", err, "sender", params.Sender.Hex(), "nonce", params.Nonce.String(), "policy_id", policyID)
 			types.SendError(c, req.ID, types.InternalErrorCode, "Operation failed")
 			return
 		}
 	}
 
+	// Generate signed paymaster data for stub
+	paymasterData, err := pc.buildAndSignPaymasterData(params, tokenAddr, paymasterVerificationGasLimit, paymasterPostOpGasLimit)
+	if err != nil {
+		log.Error("Failed to build and sign paymaster data for stub", "error", err)
+		types.SendError(c, req.ID, types.PaymasterDataGenErrorCode, "Failed to generate paymaster data")
+		return
+	}
+
 	stubResult := types.GetPaymasterStubDataResultV7{
 		Paymaster:                     pc.cfg.PaymasterAddressV7,
 		PaymasterData:                 paymasterData,
 		PaymasterPostOpGasLimit:       hexutil.EncodeBig(paymasterPostOpGasLimit),
-		PaymasterVerificationGasLimit: hexutil.EncodeBig(verificationGasLimit),
+		PaymasterVerificationGasLimit: hexutil.EncodeBig(paymasterVerificationGasLimit),
 	}
 
 	log.Debug("Return stub data", "result", stubResult)
@@ -131,31 +133,40 @@ func (pc *PaymasterController) handleGetPaymasterData(c *gin.Context, req types.
 		return
 	}
 
-	// Generate signed paymaster data
-	paymasterData, verificationGasLimit, paymasterPostOpGasLimit, err := pc.buildAndSignPaymasterData(params, tokenAddr)
-	if err != nil {
-		log.Error("Failed to build and sign paymaster data", "error", err)
-		types.SendError(c, req.ID, types.PaymasterDataGenErrorCode, "Failed to generate paymaster data")
+	paymasterVerificationGasLimit, paymasterPostOpGasLimit := calculatePaymasterGasLimits(tokenAddr, pc.cfg.USDTAddress)
+
+	// Validate paymaster related gas limits
+	if err := validateClientGasLimits(params, paymasterVerificationGasLimit, paymasterPostOpGasLimit); err != nil {
+		log.Error("Gas limit validation failed", "error", err, "sender", params.Sender.Hex())
+		types.SendError(c, req.ID, types.InvalidParamsCode, fmt.Sprintf("Gas limit mismatch: %v", err))
 		return
 	}
 
 	// Check quota and update operation record for ETH payments only
 	if tokenAddr == emptyAddr {
-		finalWei := pc.calculateEstimatedWei(params, verificationGasLimit, paymasterPostOpGasLimit)
+		finalWei := pc.calculateEstimatedWei(params, paymasterVerificationGasLimit, paymasterPostOpGasLimit)
 
 		// Check quota first
-		if err = pc.checkQuota(c.Request.Context(), apiKey, policyID, params.Sender, finalWei); err != nil {
+		if err := pc.checkQuota(c.Request.Context(), apiKey, policyID, params.Sender, finalWei); err != nil {
 			log.Error("Quota check failed", "error", err, "sender", params.Sender.Hex(), "nonce", params.Nonce.String(), "policy_id", policyID)
 			types.SendError(c, req.ID, types.QuotaExceededErrorCode, "Quota exceeded")
 			return
 		}
 
 		// Create or update record
-		if err = pc.createOrUpdateRecord(c.Request.Context(), apiKey, policyID, params.Sender, params.Nonce.ToInt(), finalWei, orm.UserOperationStatusPaymasterDataProvided); err != nil {
+		if err := pc.createOrUpdateRecord(c.Request.Context(), apiKey, policyID, params.Sender, params.Nonce.ToInt(), finalWei, orm.UserOperationStatusPaymasterDataProvided); err != nil {
 			log.Error("Failed to create or update operation record", "error", err, "sender", params.Sender.Hex(), "nonce", params.Nonce.String(), "policy_id", policyID)
 			types.SendError(c, req.ID, types.InternalErrorCode, "Operation failed")
 			return
 		}
+	}
+
+	// Generate signed paymaster data
+	paymasterData, err := pc.buildAndSignPaymasterData(params, tokenAddr, paymasterVerificationGasLimit, paymasterPostOpGasLimit)
+	if err != nil {
+		log.Error("Failed to build and sign paymaster data", "error", err)
+		types.SendError(c, req.ID, types.PaymasterDataGenErrorCode, "Failed to generate paymaster data")
+		return
 	}
 
 	result := types.GetPaymasterDataResultV7{
@@ -446,7 +457,7 @@ func (pc *PaymasterController) getChainlinkPrice() (*big.Float, error) {
 }
 
 // buildAndSignPaymasterData builds and signs paymaster data
-func (pc *PaymasterController) buildAndSignPaymasterData(userOp *types.PaymasterUserOperationV7, tokenAddr common.Address) (string, *big.Int, *big.Int, error) {
+func (pc *PaymasterController) buildAndSignPaymasterData(userOp *types.PaymasterUserOperationV7, tokenAddr common.Address, paymasterVerificationGasLimit, paymasterPostOpGasLimit *big.Int) (string, error) {
 	// Current timestamp in seconds
 	currentTime := time.Now().Unix()
 
@@ -464,18 +475,14 @@ func (pc *PaymasterController) buildAndSignPaymasterData(userOp *types.Paymaster
 
 	// Set default values for ETH
 	exchangeRate := big.NewInt(0) // Zero for ETH
-	postOpGas := big.NewInt(5000)
-	verificationGas := big.NewInt(25000)
 
 	// If using USDT token
 	if tokenAddr != emptyAddr && strings.EqualFold(tokenAddr.Hex(), pc.cfg.USDTAddress.Hex()) {
 		var err error
 		exchangeRate, err = pc.getETHUSDTExchangeRate() // Get exchange rate with 5% premium
 		if err != nil {
-			return "", nil, nil, fmt.Errorf("failed to get ETH/USDT exchange rate: %w", err)
+			return "", fmt.Errorf("failed to get ETH/USDT exchange rate: %w", err)
 		}
-		postOpGas = big.NewInt(40000)
-		verificationGas = big.NewInt(30000)
 	}
 
 	// Pack paymaster data
@@ -489,22 +496,35 @@ func (pc *PaymasterController) buildAndSignPaymasterData(userOp *types.Paymaster
 		tokenAddr,
 		pc.cfg.PaymasterAddressV7, // receiver
 		exchangeRate,
-		postOpGas,
+		paymasterPostOpGasLimit,
 	)
 
 	// Hash user operation with paymaster data
-	hash := pc.getPaymasterDataHash(userOp, validUntil, validAfter, sponsorUUID, allowAnyBundler, precheckBalance, prepaymentRequired, tokenAddr, pc.cfg.PaymasterAddressV7, exchangeRate, postOpGas)
+	hash := pc.getPaymasterDataHash(
+		userOp,
+		validUntil,
+		validAfter,
+		sponsorUUID,
+		allowAnyBundler,
+		precheckBalance,
+		prepaymentRequired,
+		tokenAddr,
+		pc.cfg.PaymasterAddressV7,
+		exchangeRate,
+		paymasterPostOpGasLimit,
+		paymasterVerificationGasLimit,
+		paymasterPostOpGasLimit)
 
 	// Sign the hash
 	signature, err := pc.signHash(hash)
 	if err != nil {
-		return "", nil, nil, fmt.Errorf("failed to sign paymaster data hash, userOp: %v, paymasterData: %x, hash: %x, error: %w", userOp, paymasterData, hex.EncodeToString(hash), err)
+		return "", fmt.Errorf("failed to sign paymaster data hash, userOp: %v, paymasterData: %s, hash: %s, error: %w", userOp, hex.EncodeToString(paymasterData), hex.EncodeToString(hash), err)
 	}
 
 	// Append signature to paymaster data
 	paymasterDataWithSig := append(paymasterData, signature...)
 
-	return "0x" + hex.EncodeToString(paymasterDataWithSig), verificationGas, postOpGas, nil
+	return "0x" + hex.EncodeToString(paymasterDataWithSig), nil
 }
 
 // packPaymasterData encodes the paymaster data fields according to the contract format
@@ -583,6 +603,7 @@ func (pc *PaymasterController) getPaymasterDataHash(userOp *types.PaymasterUserO
 	allowAnyBundler, precheckBalance, prepaymentRequired bool,
 	token, receiver common.Address,
 	exchangeRate, postOpGas *big.Int,
+	paymasterValidationGasLimit, paymasterPostOpGasLimit *big.Int,
 ) []byte {
 	var buffer []byte
 
@@ -631,6 +652,9 @@ func (pc *PaymasterController) getPaymasterDataHash(userOp *types.PaymasterUserO
 	buffer = append(buffer, common.LeftPadBytes(exchangeRate.Bytes(), 32)...)
 	buffer = append(buffer, common.LeftPadBytes(postOpGas.Bytes(), 32)...)
 
+	buffer = append(buffer, common.LeftPadBytes(paymasterValidationGasLimit.Bytes(), 32)...)
+	buffer = append(buffer, common.LeftPadBytes(paymasterPostOpGasLimit.Bytes(), 32)...)
+
 	log.Debug("Packed data for hashing", "packedData", hexutil.Encode(buffer))
 
 	return crypto.Keccak256(buffer)
@@ -664,4 +688,46 @@ func (pc *PaymasterController) signHash(hash []byte) ([]byte, error) {
 func packGasLimits(high, low *big.Int) [32]byte {
 	combined := new(big.Int).Or(new(big.Int).Lsh(high, 128), low)
 	return [32]byte(common.LeftPadBytes(combined.Bytes(), 32))
+}
+
+// calculatePaymasterGasLimits calculates the gas limits for paymaster operations based on the token address.
+// The token address is either the zero address for ETH or the USDT address, validated before calling this function.
+func calculatePaymasterGasLimits(tokenAddr common.Address, usdtAddress common.Address) (*big.Int, *big.Int) {
+	// Set default values for ETH
+	paymasterPostOpGasLimit := big.NewInt(5000)
+	paymasterVerificationGasLimit := big.NewInt(25000)
+
+	// If using USDT token
+	if tokenAddr != emptyAddr && strings.EqualFold(tokenAddr.Hex(), usdtAddress.Hex()) {
+		paymasterPostOpGasLimit = big.NewInt(40000)
+		paymasterVerificationGasLimit = big.NewInt(30000)
+	}
+
+	return paymasterVerificationGasLimit, paymasterPostOpGasLimit
+}
+
+// validateClientGasLimits validates the gas limits provided by the client against the expected values.
+// This function is used in pm_getPaymasterData to ensure the client has provided correct gas limits.
+func validateClientGasLimits(userOp *types.PaymasterUserOperationV7,
+	expectedPaymasterVerificationGasLimit, expectedPaymasterPostOpGasLimit *big.Int,
+) error {
+	if userOp.PaymasterVerificationGasLimit == nil {
+		return fmt.Errorf("paymasterVerificationGasLimit is required for pm_getPaymasterData")
+	}
+
+	clientPaymasterVerificationGas := userOp.PaymasterVerificationGasLimit.ToInt()
+	if clientPaymasterVerificationGas.Cmp(expectedPaymasterVerificationGasLimit) != 0 {
+		return fmt.Errorf("paymasterVerificationGasLimit mismatch: client=%s, expected=%s", clientPaymasterVerificationGas.String(), expectedPaymasterVerificationGasLimit.String())
+	}
+
+	if userOp.PaymasterPostOpGasLimit == nil {
+		return fmt.Errorf("paymasterPostOpGasLimit is required for pm_getPaymasterData")
+	}
+
+	clientPaymasterPostOpGasLimit := userOp.PaymasterPostOpGasLimit.ToInt()
+	if clientPaymasterPostOpGasLimit.Cmp(expectedPaymasterPostOpGasLimit) != 0 {
+		return fmt.Errorf("paymasterPostOpGasLimit mismatch: client=%s, expected=%s", clientPaymasterPostOpGasLimit.String(), expectedPaymasterPostOpGasLimit.String())
+	}
+
+	return nil
 }
