@@ -699,7 +699,7 @@ func calculatePaymasterGasLimits(tokenAddr common.Address, usdtAddress common.Ad
 
 	// If using USDT token
 	if tokenAddr != emptyAddr && strings.EqualFold(tokenAddr.Hex(), usdtAddress.Hex()) {
-		paymasterPostOpGasLimit = big.NewInt(50000)
+		paymasterPostOpGasLimit = big.NewInt(45000)
 		paymasterVerificationGasLimit = big.NewInt(30000)
 	}
 
