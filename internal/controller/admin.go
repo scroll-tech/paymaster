@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math/big"
 
+	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
@@ -155,7 +156,7 @@ func (ac *AdminController) handleCreatePolicy(c *gin.Context, req types.Paymaste
 	}
 
 	newPolicy := &orm.Policy{
-		APIKey:     apiKey,
+		APIKeyHash: crypto.Keccak256Hash([]byte(apiKey)),
 		PolicyID:   policyID,
 		PolicyName: params.PolicyName,
 		Limits:     params.Limits,

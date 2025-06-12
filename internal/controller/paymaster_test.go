@@ -13,6 +13,7 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/hexutil"
+	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
@@ -83,7 +84,7 @@ func setupPaymasterTestRouter(db *gorm.DB) *gin.Engine {
 func createTestPolicy(t *testing.T, db *gorm.DB, maxEth string, timeWindowHours int) {
 	policyOrm := orm.NewPolicy(db)
 	policy := &orm.Policy{
-		APIKey:     "test-api-key",
+		APIKeyHash: crypto.Keccak256Hash([]byte("test-api-key")),
 		PolicyID:   1,
 		PolicyName: "Test Policy",
 		Limits: orm.PolicyLimits{
@@ -314,7 +315,7 @@ func TestPaymasterController_QuotaLimiting(t *testing.T) {
 
 		// Verify the record in database
 		var operation orm.UserOperation
-		err = db.Where("api_key = ?", "test-api-key").
+		err = db.Where("api_key_hash = ?", crypto.Keccak256Hash([]byte("test-api-key"))).
 			Where("policy_id = ?", 1).
 			Where("sender = ?", testSenderAddress1).
 			Where("nonce = ?", 1).
@@ -375,18 +376,18 @@ func TestPaymasterController_QuotaLimiting_EdgeCases(t *testing.T) {
 		oldTime := time.Now().UTC().Add(-2 * time.Hour)
 
 		oldOp := &orm.UserOperation{
-			APIKey:    "test-api-key",
-			PolicyID:  1,
-			Sender:    testSenderAddress1,
-			Nonce:     1,
-			WeiAmount: 500000000000000, // 0.0005 ETH
-			Status:    orm.UserOperationStatusPaymasterDataProvided,
+			APIKeyHash: crypto.Keccak256Hash([]byte("test-api-key")),
+			PolicyID:   1,
+			Sender:     testSenderAddress1,
+			Nonce:      1,
+			WeiAmount:  500000000000000, // 0.0005 ETH
+			Status:     orm.UserOperationStatusPaymasterDataProvided,
 		}
 		err := userOpOrm.CreateOrUpdate(context.Background(), oldOp)
 		require.NoError(t, err)
 
 		err = db.Model(&orm.UserOperation{}).
-			Where("api_key = ?", "test-api-key").
+			Where("api_key_hash = ?", crypto.Keccak256Hash([]byte("test-api-key"))).
 			Where("sender = ?", testSenderAddress1).
 			Where("nonce = ?", 1).
 			Updates(map[string]interface{}{

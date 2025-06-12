@@ -4,7 +4,7 @@
 CREATE TABLE user_operation
 (
     id              BIGSERIAL       PRIMARY KEY,
-    api_key         VARCHAR(64)     NOT NULL,
+    api_key_hash    VARCHAR(66)     NOT NULL,
     policy_id       BIGINT          NOT NULL,
     sender          VARCHAR(42)     NOT NULL,
     nonce           BIGINT          NOT NULL,
@@ -19,8 +19,9 @@ CREATE TABLE user_operation
 ALTER TABLE user_operation ADD CONSTRAINT check_status CHECK (status IN (1, 2));
 
 COMMENT ON COLUMN user_operation.status IS '1=stub_data_provided (pm_getPaymasterStubData), 2=paymaster_data_provided (pm_getPaymasterData)';
+COMMENT ON COLUMN user_operation.api_key_hash IS 'Keccak256 hash of the API key';
 
-CREATE UNIQUE INDEX unique_idx_api_key_policy_id_sender_nonce ON user_operation(api_key, policy_id, sender, nonce);
-CREATE INDEX idx_api_key_policy_id_sender_updated_at ON user_operation(api_key, policy_id, sender, updated_at) WHERE deleted_at IS NULL;
+CREATE UNIQUE INDEX unique_idx_api_key_hash_policy_id_sender_nonce ON user_operation(api_key_hash, policy_id, sender, nonce);
+CREATE INDEX idx_api_key_hash_policy_id_sender_updated_at ON user_operation(api_key_hash, policy_id, sender, updated_at) WHERE deleted_at IS NULL;
 
 -- +goose StatementEnd

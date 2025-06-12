@@ -5,6 +5,8 @@ import (
 	"context"
 	"time"
 
+	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/crypto"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
@@ -23,16 +25,16 @@ const (
 type UserOperation struct {
 	db *gorm.DB `gorm:"column:-"`
 
-	ID        uint64              `gorm:"column:id;primaryKey"`
-	APIKey    string              `gorm:"column:api_key;uniqueIndex:unique_idx_api_key_policy_id_sender_nonce"`
-	PolicyID  int64               `gorm:"column:policy_id;uniqueIndex:unique_idx_api_key_policy_id_sender_nonce"`
-	Sender    string              `gorm:"column:sender;uniqueIndex:unique_idx_api_key_policy_id_sender_nonce"`
-	Nonce     int64               `gorm:"column:nonce;uniqueIndex:unique_idx_api_key_policy_id_sender_nonce"`
-	WeiAmount int64               `gorm:"column:wei_amount"`
-	Status    UserOperationStatus `gorm:"column:status"`
-	CreatedAt time.Time           `gorm:"column:created_at"`
-	UpdatedAt time.Time           `gorm:"column:updated_at"`
-	DeletedAt *time.Time          `gorm:"column:deleted_at"`
+	ID         uint64              `gorm:"column:id;primaryKey"`
+	APIKeyHash common.Hash         `gorm:"column:api_key_hash;uniqueIndex:unique_idx_api_key_hash_policy_id_sender_nonce"`
+	PolicyID   int64               `gorm:"column:policy_id;uniqueIndex:unique_idx_api_key_hash_policy_id_sender_nonce"`
+	Sender     string              `gorm:"column:sender;uniqueIndex:unique_idx_api_key_hash_policy_id_sender_nonce"`
+	Nonce      int64               `gorm:"column:nonce;uniqueIndex:unique_idx_api_key_hash_policy_id_sender_nonce"`
+	WeiAmount  int64               `gorm:"column:wei_amount"`
+	Status     UserOperationStatus `gorm:"column:status"`
+	CreatedAt  time.Time           `gorm:"column:created_at"`
+	UpdatedAt  time.Time           `gorm:"column:updated_at"`
+	DeletedAt  *time.Time          `gorm:"column:deleted_at"`
 }
 
 // TableName returns the database table name for UserOperation
@@ -50,7 +52,7 @@ func (u *UserOperation) CreateOrUpdate(ctx context.Context, userOp *UserOperatio
 	return u.db.WithContext(ctx).
 		Clauses(clause.OnConflict{
 			Columns: []clause.Column{
-				{Name: "api_key"},
+				{Name: "api_key_hash"},
 				{Name: "policy_id"},
 				{Name: "sender"},
 				{Name: "nonce"},
@@ -66,10 +68,11 @@ func (u *UserOperation) CreateOrUpdate(ctx context.Context, userOp *UserOperatio
 // GetWalletUsage calculates the ETH amount used by a specific sender within the time window for a specific policy
 func (u *UserOperation) GetWalletUsage(ctx context.Context, apiKey string, policyID int64, sender string, timeWindowHours int) (int64, error) {
 	var usage int64
+	apiKeyHash := crypto.Keccak256Hash([]byte(apiKey))
 	err := u.db.WithContext(ctx).
 		Model(&UserOperation{}).
 		Select("COALESCE(SUM(wei_amount), 0)").
-		Where("api_key = ?", apiKey).
+		Where("api_key_hash = ?", apiKeyHash).
 		Where("policy_id = ?", policyID).
 		Where("sender = ?", sender).
 		Where("updated_at >= ?", time.Now().UTC().Add(time.Duration(-timeWindowHours)*time.Hour)).

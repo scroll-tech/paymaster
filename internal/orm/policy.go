@@ -5,6 +5,8 @@ import (
 	"context"
 	"time"
 
+	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/crypto"
 	"gorm.io/gorm"
 )
 
@@ -19,7 +21,7 @@ type Policy struct {
 	db *gorm.DB `gorm:"column:-"`
 
 	ID         uint64       `gorm:"column:id;primaryKey"`
-	APIKey     string       `gorm:"column:api_key"`
+	APIKeyHash common.Hash  `gorm:"column:api_key_hash"`
 	PolicyID   int64        `gorm:"column:policy_id"`
 	PolicyName string       `gorm:"column:policy_name"`
 	Limits     PolicyLimits `gorm:"column:limits;serializer:json"`
@@ -46,8 +48,9 @@ func (p *Policy) Create(ctx context.Context, policy *Policy) error {
 // GetByAPIKeyAndPolicyID retrieves a policy by API key and policy ID
 func (p *Policy) GetByAPIKeyAndPolicyID(ctx context.Context, apiKey string, policyID int64) (*Policy, error) {
 	var result Policy
+	apiKeyHash := crypto.Keccak256Hash([]byte(apiKey))
 	err := p.db.WithContext(ctx).
-		Where("api_key = ?", apiKey).
+		Where("api_key_hash = ?", apiKeyHash).
 		Where("policy_id = ?", policyID).
 		First(&result).Error
 	return &result, err
@@ -56,8 +59,9 @@ func (p *Policy) GetByAPIKeyAndPolicyID(ctx context.Context, apiKey string, poli
 // GetByAPIKey retrieves all policies for a given API key
 func (p *Policy) GetByAPIKey(ctx context.Context, apiKey string) ([]*Policy, error) {
 	var results []*Policy
+	apiKeyHash := crypto.Keccak256Hash([]byte(apiKey))
 	err := p.db.WithContext(ctx).
-		Where("api_key = ?", apiKey).
+		Where("api_key_hash = ?", apiKeyHash).
 		Order("policy_id ASC").
 		Find(&results).Error
 	return results, err
@@ -65,17 +69,19 @@ func (p *Policy) GetByAPIKey(ctx context.Context, apiKey string) ([]*Policy, err
 
 // Update updates a policy record
 func (p *Policy) Update(ctx context.Context, apiKey string, policyID int64, updates map[string]interface{}) error {
+	apiKeyHash := crypto.Keccak256Hash([]byte(apiKey))
 	return p.db.WithContext(ctx).
 		Model(&Policy{}).
-		Where("api_key = ?", apiKey).
+		Where("api_key_hash = ?", apiKeyHash).
 		Where("policy_id = ?", policyID).
 		Updates(updates).Error
 }
 
 // Delete soft deletes a policy record
 func (p *Policy) Delete(ctx context.Context, apiKey string, policyID int64) error {
+	apiKeyHash := crypto.Keccak256Hash([]byte(apiKey))
 	return p.db.WithContext(ctx).
-		Where("api_key = ?", apiKey).
+		Where("api_key_hash = ?", apiKeyHash).
 		Where("policy_id = ?", policyID).
 		Delete(&Policy{}).Error
 }

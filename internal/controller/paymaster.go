@@ -225,12 +225,12 @@ func (pc *PaymasterController) checkQuota(ctx context.Context, apiKey string, po
 // createOrUpdateRecord creates or updates the operation record
 func (pc *PaymasterController) createOrUpdateRecord(ctx context.Context, apiKey string, policyID int64, sender common.Address, nonce *big.Int, weiAmount *big.Int, status orm.UserOperationStatus) error {
 	userOp := &orm.UserOperation{
-		APIKey:    apiKey,
-		PolicyID:  policyID,
-		Sender:    sender.Hex(),
-		Nonce:     nonce.Int64(),
-		WeiAmount: weiAmount.Int64(),
-		Status:    status,
+		APIKeyHash: crypto.Keccak256Hash([]byte(apiKey)),
+		PolicyID:   policyID,
+		Sender:     sender.Hex(),
+		Nonce:      nonce.Int64(),
+		WeiAmount:  weiAmount.Int64(),
+		Status:     status,
 	}
 
 	err := pc.userOperationOrm.CreateOrUpdate(ctx, userOp)
