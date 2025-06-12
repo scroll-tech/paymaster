@@ -20,7 +20,7 @@ ALTER TABLE user_operation ADD CONSTRAINT check_status CHECK (status IN (1, 2));
 
 COMMENT ON COLUMN user_operation.status IS '1=stub_data_provided (pm_getPaymasterStubData), 2=paymaster_data_provided (pm_getPaymasterData)';
 
-CREATE UNIQUE INDEX unique_idx_api_key_policy_id_sender_nonce ON user_operation(api_key, policy_id, sender, nonce) WHERE deleted_at IS NULL;
+CREATE UNIQUE INDEX unique_idx_api_key_policy_id_sender_nonce ON user_operation(api_key, policy_id, sender, nonce);
 CREATE INDEX idx_api_key_policy_id_sender_updated_at ON user_operation(api_key, policy_id, sender, updated_at) WHERE deleted_at IS NULL;
 
 -- +goose StatementEnd

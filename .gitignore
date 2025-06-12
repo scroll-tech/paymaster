@@ -26,3 +26,9 @@ go.work.sum
 
 # Built binaries
 build/bin
+
+# Configuration files
+conf/local.json
+conf/*.local.json
+conf/dev.json
+*.local.json
