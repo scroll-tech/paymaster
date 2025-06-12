@@ -156,7 +156,7 @@ func (ac *AdminController) handleCreatePolicy(c *gin.Context, req types.Paymaste
 	}
 
 	newPolicy := &orm.Policy{
-		APIKeyHash: crypto.Keccak256Hash([]byte(apiKey)),
+		APIKeyHash: crypto.Keccak256Hash([]byte(apiKey)).Hex(),
 		PolicyID:   policyID,
 		PolicyName: params.PolicyName,
 		Limits:     params.Limits,
