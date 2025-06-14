@@ -18,6 +18,7 @@ type Config struct {
 	RateLimiterQPS     int64           `json:"rate_limiter_qps"`
 	ChainID            int64           `json:"chain_id"`
 	SignerPrivateKey   string          `json:"signer_private_key"`
+	AWSKMSKeyID        string          `json:"aws_kms_key_id"`
 	USDTAddress        common.Address  `json:"usdt_address"`
 	EthereumRPCURLs    []string        `json:"ethereum_rpc_urls"`
 	DBConfig           database.Config `json:"db_config"`
