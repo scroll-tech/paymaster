@@ -8,6 +8,7 @@ import (
 
 	"github.com/scroll-tech/paymaster/internal/config"
 	"github.com/scroll-tech/paymaster/internal/types"
+	"github.com/scroll-tech/paymaster/internal/utils"
 )
 
 var (
@@ -48,7 +49,7 @@ func UnifiedHandler(c *gin.Context) {
 	}
 
 	// Still validate the API key against the config to verify some settings in unit tests
-	if apiKey != adminCtl.cfg.APIKey {
+	if !utils.IsValidAPIKey(apiKey, adminCtl.cfg.APIKeys) {
 		log.Debug("Unauthorized: Invalid API key", "provided", apiKey)
 		types.SendError(c, req.ID, types.UnauthorizedErrorCode, "Unauthorized: Invalid API key")
 		return

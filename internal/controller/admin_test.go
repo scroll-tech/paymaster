@@ -49,7 +49,7 @@ func setupTestRouter(db *gorm.DB) *gin.Engine {
 	gin.SetMode(gin.TestMode)
 
 	cfg := &config.Config{
-		APIKey: "test-api-key",
+		APIKeys: []string{"test-api-key"},
 	}
 
 	adminController := NewAdminController(cfg, db)

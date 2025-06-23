@@ -8,6 +8,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/scroll-tech/paymaster/internal/config"
 	"github.com/scroll-tech/paymaster/internal/types"
+	"github.com/scroll-tech/paymaster/internal/utils"
 )
 
 // AuthMiddleware validates API key from Authorization header
@@ -23,7 +24,7 @@ func AuthMiddleware(cfg *config.Config) gin.HandlerFunc {
 			return
 		}
 
-		if apiKey != cfg.APIKey {
+		if !utils.IsValidAPIKey(apiKey, cfg.APIKeys) {
 			log.Debug("Unauthorized: Invalid API key", "provided", apiKey)
 			types.SendError(c, nil, types.UnauthorizedErrorCode, "Unauthorized: Invalid API key")
 			c.Abort()

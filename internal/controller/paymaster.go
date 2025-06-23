@@ -40,11 +40,17 @@ type PaymasterController struct {
 
 // NewPaymasterController creates and initializes a new PaymasterController.
 func NewPaymasterController(cfg *config.Config, db *gorm.DB) *PaymasterController {
-	if cfg.APIKey == "" {
-		log.Crit("API key is required")
+	if len(cfg.APIKeys) == 0 {
+		log.Crit("API keys are required")
 	}
 
-	privateKeyBytes, err := hex.DecodeString(cfg.SignerPrivateKey)
+	// Handle private key with or without 0x prefix
+	privateKeyStr := cfg.SignerPrivateKey
+	if strings.HasPrefix(privateKeyStr, "0x") || strings.HasPrefix(privateKeyStr, "0X") {
+		privateKeyStr = privateKeyStr[2:]
+	}
+
+	privateKeyBytes, err := hex.DecodeString(privateKeyStr)
 	if err != nil {
 		log.Crit("Failed to decode private key", "error", err)
 	}
