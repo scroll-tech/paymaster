@@ -13,7 +13,7 @@ import (
 
 // Config represents the configuration for the paymaster.
 type Config struct {
-	APIKey             string          `json:"api_key"`
+	APIKeys            []string        `json:"api_keys"`
 	PaymasterAddressV7 common.Address  `json:"paymaster_address_v7"`
 	RateLimiterQPS     int64           `json:"rate_limiter_qps"`
 	ChainID            int64           `json:"chain_id"`

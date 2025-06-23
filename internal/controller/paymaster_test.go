@@ -43,7 +43,7 @@ var (
 
 func setupPaymasterTestRouter(db *gorm.DB) *gin.Engine {
 	cfg := &config.Config{
-		APIKey:             "test-api-key",
+		APIKeys:            []string{"test-api-key"},
 		SignerPrivateKey:   "ac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80", // test private key
 		PaymasterAddressV7: common.HexToAddress("0x1234567890123456789012345678901234567890"),
 		ChainID:            534352, // Scroll mainnet (L2)
