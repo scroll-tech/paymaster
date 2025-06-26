@@ -93,7 +93,7 @@ func (pc *PaymasterController) handleGetPaymasterStubData(c *gin.Context, req ty
 
 	paymasterVerificationGasLimit, paymasterPostOpGasLimit := calculatePaymasterGasLimits(tokenAddr, pc.cfg.USDTAddress)
 
-	// Check quota for ETH payments only
+	// Check quota and create record only for ETH payments
 	if tokenAddr == emptyAddr {
 		estimatedWei := pc.calculateEstimatedWei(params, paymasterVerificationGasLimit, paymasterPostOpGasLimit)
 
@@ -110,6 +110,8 @@ func (pc *PaymasterController) handleGetPaymasterStubData(c *gin.Context, req ty
 			types.SendError(c, req.ID, types.InternalErrorCode, "Operation failed")
 			return
 		}
+	} else {
+		log.Debug("Token payment detected, skipping quota check and record creation", "token", tokenAddr.Hex(), "sender", params.Sender.Hex(), "nonce", params.Nonce.String())
 	}
 
 	// Generate signed paymaster data for stub
@@ -148,7 +150,7 @@ func (pc *PaymasterController) handleGetPaymasterData(c *gin.Context, req types.
 		return
 	}
 
-	// Check quota and update operation record for ETH payments only
+	// Check quota and update operation record only for ETH payments
 	if tokenAddr == emptyAddr {
 		finalWei := pc.calculateEstimatedWei(params, paymasterVerificationGasLimit, paymasterPostOpGasLimit)
 
@@ -165,6 +167,8 @@ func (pc *PaymasterController) handleGetPaymasterData(c *gin.Context, req types.
 			types.SendError(c, req.ID, types.InternalErrorCode, "Operation failed")
 			return
 		}
+	} else {
+		log.Debug("Token payment detected, skipping quota check and record creation", "token", tokenAddr.Hex(), "sender", params.Sender.Hex(), "nonce", params.Nonce.String())
 	}
 
 	// Generate signed paymaster data
@@ -327,18 +331,6 @@ func (pc *PaymasterController) parseERC7677Params(rawParams json.RawMessage) (*t
 		return nil, common.Address{}, 0, &types.RPCError{Code: types.InvalidParamsCode, Message: "Context is required"}
 	}
 
-	if context.PolicyID == nil {
-		log.Debug("Missing policy_id in context")
-		return nil, common.Address{}, 0, &types.RPCError{Code: types.InvalidParamsCode, Message: "policy_id is required in context"}
-	}
-
-	if *context.PolicyID < 0 {
-		log.Debug("Invalid policy_id", "policy_id", *context.PolicyID)
-		return nil, common.Address{}, 0, &types.RPCError{Code: types.InvalidParamsCode, Message: "Invalid policy_id. It must be a non-negative integer."}
-	}
-
-	policyID := *context.PolicyID
-
 	// Handle token address
 	tokenAddr := common.Address{}
 	if context.Token != "" {
@@ -347,6 +339,33 @@ func (pc *PaymasterController) parseERC7677Params(rawParams json.RawMessage) (*t
 			log.Debug("Unsupported token", "provided", tokenAddr.Hex(), "expected", pc.cfg.USDTAddress.Hex())
 			return nil, common.Address{}, 0, &types.RPCError{Code: types.UnsupportedTokenErrorCode, Message: "Unsupported token. Only " + pc.cfg.USDTAddress.Hex() + " is supported."}
 		}
+	}
+
+	// Policy ID validation: required only for ETH payments (empty token address)
+	var policyID int64 // Default value for token payments
+	if tokenAddr == emptyAddr {
+		// ETH payment requires policy_id
+		if context.PolicyID == nil {
+			log.Debug("Missing policy_id in context for ETH payment")
+			return nil, common.Address{}, 0, &types.RPCError{Code: types.InvalidParamsCode, Message: "policy_id is required in context for ETH payments"}
+		}
+
+		if *context.PolicyID < 0 {
+			log.Debug("Invalid policy_id", "policy_id", *context.PolicyID)
+			return nil, common.Address{}, 0, &types.RPCError{Code: types.InvalidParamsCode, Message: "Invalid policy_id. It must be a non-negative integer."}
+		}
+
+		policyID = *context.PolicyID
+	} else {
+		// Token payment: policy_id is optional, use provided value or default to 0
+		if context.PolicyID != nil {
+			if *context.PolicyID < 0 {
+				log.Debug("Invalid policy_id", "policy_id", *context.PolicyID)
+				return nil, common.Address{}, 0, &types.RPCError{Code: types.InvalidParamsCode, Message: "Invalid policy_id. It must be a non-negative integer."}
+			}
+			policyID = *context.PolicyID
+		}
+		log.Debug("Token payment detected, policy_id not required", "token", tokenAddr.Hex(), "policy_id", policyID, "sender", userOp.Sender.Hex(), "nonce", userOp.Nonce.String())
 	}
 
 	return userOp, tokenAddr, policyID, nil
@@ -706,7 +725,7 @@ func calculatePaymasterGasLimits(tokenAddr common.Address, usdtAddress common.Ad
 	// If using USDT token
 	if tokenAddr != emptyAddr && strings.EqualFold(tokenAddr.Hex(), usdtAddress.Hex()) {
 		paymasterPostOpGasLimit = big.NewInt(42000)
-		paymasterVerificationGasLimit = big.NewInt(30000)
+		paymasterVerificationGasLimit = big.NewInt(35000)
 	}
 
 	return paymasterVerificationGasLimit, paymasterPostOpGasLimit
