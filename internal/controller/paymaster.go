@@ -632,10 +632,15 @@ func (pc *PaymasterController) getPaymasterDataHash(userOp *types.PaymasterUserO
 ) []byte {
 	var buffer []byte
 
-	// UserOp fields (8 * 32 bytes)
 	buffer = append(buffer, common.LeftPadBytes(userOp.Sender.Bytes(), 32)...)
 	buffer = append(buffer, common.LeftPadBytes(userOp.Nonce.ToInt().Bytes(), 32)...)
-	buffer = append(buffer, crypto.Keccak256Hash(common.FromHex(userOp.InitCode)).Bytes()...)
+
+	var initCode []byte
+	if userOp.Factory != nil {
+		initCode = append(userOp.Factory.Bytes(), common.FromHex(userOp.FactoryData)...)
+	}
+	buffer = append(buffer, crypto.Keccak256Hash(initCode).Bytes()...)
+
 	buffer = append(buffer, crypto.Keccak256Hash(common.FromHex(userOp.CallData)).Bytes()...)
 
 	gasLimits := packGasLimits(userOp.VerificationGasLimit.ToInt(), userOp.CallGasLimit.ToInt())
@@ -649,7 +654,6 @@ func (pc *PaymasterController) getPaymasterDataHash(userOp *types.PaymasterUserO
 	buffer = append(buffer, common.LeftPadBytes(big.NewInt(pc.cfg.ChainID).Bytes(), 32)...)
 	buffer = append(buffer, common.LeftPadBytes(pc.cfg.PaymasterAddressV7.Bytes(), 32)...)
 
-	// PaymasterData fields (10 * 32 bytes)
 	buffer = append(buffer, common.LeftPadBytes(validUntil.Bytes(), 32)...)
 	buffer = append(buffer, common.LeftPadBytes(validAfter.Bytes(), 32)...)
 	buffer = append(buffer, common.LeftPadBytes(sponsorUUID.Bytes(), 32)...)
