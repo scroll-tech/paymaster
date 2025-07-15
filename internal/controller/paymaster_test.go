@@ -134,7 +134,8 @@ func createTestUserOp(sender string, nonce int64) map[string]interface{} {
 	return map[string]interface{}{
 		"sender":               sender,
 		"nonce":                hexutil.EncodeBig(big.NewInt(nonce)),
-		"initCode":             "0x",
+		"factory":              nil,
+		"factoryData":          "",
 		"callData":             "0x",
 		"verificationGasLimit": hexutil.EncodeBig(big.NewInt(100000)),
 		"callGasLimit":         hexutil.EncodeBig(big.NewInt(200000)),
