@@ -648,7 +648,7 @@ func (pc *PaymasterController) getPaymasterDataHash(userOp *types.PaymasterUserO
 
 	buffer = append(buffer, common.LeftPadBytes(userOp.PreVerificationGas.ToInt().Bytes(), 32)...)
 
-	gasFees := packGasLimits(userOp.MaxFeePerGas.ToInt(), userOp.MaxPriorityFeePerGas.ToInt())
+	gasFees := packGasLimits(userOp.MaxPriorityFeePerGas.ToInt(), userOp.MaxFeePerGas.ToInt())
 	buffer = append(buffer, gasFees[:]...)
 
 	buffer = append(buffer, common.LeftPadBytes(big.NewInt(pc.cfg.ChainID).Bytes(), 32)...)
@@ -714,7 +714,16 @@ func (pc *PaymasterController) signHash(hash []byte) ([]byte, error) {
 	return signature, nil
 }
 
+var max128Bit = new(big.Int).Sub(new(big.Int).Lsh(big.NewInt(1), 128), big.NewInt(1))
+
 func packGasLimits(high, low *big.Int) [32]byte {
+	if high.Cmp(max128Bit) > 0 || low.Cmp(max128Bit) > 0 {
+		panic("value exceeds 128 bits")
+	}
+	if high.Sign() < 0 || low.Sign() < 0 {
+		panic("value cannot be negative")
+	}
+
 	combined := new(big.Int).Or(new(big.Int).Lsh(high, 128), low)
 	return [32]byte(common.LeftPadBytes(combined.Bytes(), 32))
 }
