@@ -38,6 +38,7 @@ const (
 
 var (
 	testUSDTAddress = common.HexToAddress("0x06eFdBFf2a14a7c8E15944D1F4A48F9F95F663A4")
+	testUSDCAddress = common.HexToAddress("0x1234567890123456789012345678901234567890")
 	testETHAddress  = common.HexToAddress("")
 )
 
@@ -48,6 +49,7 @@ func setupPaymasterTestRouter(db *gorm.DB) *gin.Engine {
 		PaymasterAddressV7: common.HexToAddress("0x1234567890123456789012345678901234567890"),
 		ChainID:            534352, // Scroll mainnet (L2)
 		USDTAddress:        common.HexToAddress("0x06eFdBFf2a14a7c8E15944D1F4A48F9F95F663A4"),
+		USDCAddress:        common.HexToAddress("0x1234567890123456789012345678901234567890"),
 		EthereumRPCURLs: []string{
 			"https://eth.llamarpc.com",
 			"https://rpc.ankr.com/eth",
@@ -186,7 +188,7 @@ func TestPaymasterController_QuotaLimiting(t *testing.T) {
 		router := setupPaymasterTestRouter(db)
 		createTestPolicy(t, db, "1.0", 24) // 1 ETH limit, 24 hours window
 
-		paymasterVerificationGasLimit, paymasterPostOpGasLimit := calculatePaymasterGasLimits(testETHAddress, testUSDTAddress)
+		paymasterVerificationGasLimit, paymasterPostOpGasLimit := calculatePaymasterGasLimits(testETHAddress, testUSDTAddress, testUSDCAddress)
 		userOp := createTestUserOpWithPaymasterGasLimits(
 			testSenderAddress1,
 			1,
@@ -288,7 +290,7 @@ func TestPaymasterController_QuotaLimiting(t *testing.T) {
 		router := setupPaymasterTestRouter(db)
 		createTestPolicy(t, db, "1.0", 24) // 1 ETH limit, 24 hours window
 
-		paymasterVerificationGasLimit, paymasterPostOpGasLimit := calculatePaymasterGasLimits(testETHAddress, testUSDTAddress)
+		paymasterVerificationGasLimit, paymasterPostOpGasLimit := calculatePaymasterGasLimits(testETHAddress, testUSDTAddress, testUSDCAddress)
 		userOp := createTestUserOpWithPaymasterGasLimits(
 			testSenderAddress1,
 			1,
@@ -464,7 +466,7 @@ func TestPaymasterController_TokenPayments(t *testing.T) {
 		router := setupPaymasterTestRouter(db)
 		createTestPolicy(t, db, "0.000000000000000001", 24) // Very low ETH limit
 
-		paymasterVerificationGasLimit, paymasterPostOpGasLimit := calculatePaymasterGasLimits(testUSDTAddress, testUSDTAddress)
+		paymasterVerificationGasLimit, paymasterPostOpGasLimit := calculatePaymasterGasLimits(testUSDTAddress, testUSDTAddress, testUSDCAddress)
 		userOp := createTestUserOpWithPaymasterGasLimits(
 			testSenderAddress1,
 			1,

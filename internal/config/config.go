@@ -19,6 +19,7 @@ type Config struct {
 	ChainID            int64           `json:"chain_id"`
 	SignerPrivateKey   string          `json:"signer_private_key"`
 	USDTAddress        common.Address  `json:"usdt_address"`
+	USDCAddress        common.Address  `json:"usdc_address"`
 	EthereumRPCURLs    []string        `json:"ethereum_rpc_urls"`
 	DBConfig           database.Config `json:"db_config"`
 }
