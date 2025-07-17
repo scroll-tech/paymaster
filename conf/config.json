@@ -5,6 +5,7 @@
     "chain_id": 534351,
     "signer_private_key": "0000000000000000000000000000000000000000000000000000000000000000",
     "usdt_address": "0x5c084394b327b48a7e9886b98d6d595c9a83b5ed",
+    "usdc_address": "0x5c084394b327b48a7e9886b98d6d595c9a83b5ed",
     "ethereum_rpc_urls": [
         "https://ethereum-rpc.publicnode.com",
         "https://eth-mainnet.public.blastapi.io",

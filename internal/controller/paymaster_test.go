@@ -37,7 +37,8 @@ const (
 )
 
 var (
-	testUSDTAddress = common.HexToAddress("0x06eFdBFf2a14a7c8E15944D1F4A48F9F95F663A4")
+	testUSDTAddress = common.HexToAddress("0xf55bec9cafdbe8730f096aa55dad6d22d44099df")
+	testUSDCAddress = common.HexToAddress("0x06eFdBFf2a14a7c8E15944D1F4A48F9F95F663A4")
 	testETHAddress  = common.HexToAddress("")
 )
 
@@ -47,7 +48,8 @@ func setupPaymasterTestRouter(db *gorm.DB) *gin.Engine {
 		SignerPrivateKey:   "ac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80", // test private key
 		PaymasterAddressV7: common.HexToAddress("0x1234567890123456789012345678901234567890"),
 		ChainID:            534352, // Scroll mainnet (L2)
-		USDTAddress:        common.HexToAddress("0x06eFdBFf2a14a7c8E15944D1F4A48F9F95F663A4"),
+		USDTAddress:        common.HexToAddress("0xf55bec9cafdbe8730f096aa55dad6d22d44099df"),
+		USDCAddress:        common.HexToAddress("0x06eFdBFf2a14a7c8E15944D1F4A48F9F95F663A4"),
 		EthereumRPCURLs: []string{
 			"https://eth.llamarpc.com",
 			"https://rpc.ankr.com/eth",
@@ -186,7 +188,7 @@ func TestPaymasterController_QuotaLimiting(t *testing.T) {
 		router := setupPaymasterTestRouter(db)
 		createTestPolicy(t, db, "1.0", 24) // 1 ETH limit, 24 hours window
 
-		paymasterVerificationGasLimit, paymasterPostOpGasLimit := calculatePaymasterGasLimits(testETHAddress, testUSDTAddress)
+		paymasterVerificationGasLimit, paymasterPostOpGasLimit := calculatePaymasterGasLimits(testETHAddress, testUSDTAddress, testUSDCAddress)
 		userOp := createTestUserOpWithPaymasterGasLimits(
 			testSenderAddress1,
 			1,
@@ -288,7 +290,7 @@ func TestPaymasterController_QuotaLimiting(t *testing.T) {
 		router := setupPaymasterTestRouter(db)
 		createTestPolicy(t, db, "1.0", 24) // 1 ETH limit, 24 hours window
 
-		paymasterVerificationGasLimit, paymasterPostOpGasLimit := calculatePaymasterGasLimits(testETHAddress, testUSDTAddress)
+		paymasterVerificationGasLimit, paymasterPostOpGasLimit := calculatePaymasterGasLimits(testETHAddress, testUSDTAddress, testUSDCAddress)
 		userOp := createTestUserOpWithPaymasterGasLimits(
 			testSenderAddress1,
 			1,
@@ -431,7 +433,7 @@ func TestPaymasterController_TokenPayments(t *testing.T) {
 			"0x82750", // Chain ID (Scroll mainnet)
 			map[string]interface{}{
 				"policy_id": 1,
-				"token":     "0x06eFdBFf2a14a7c8E15944D1F4A48F9F95F663A4", // USDT address
+				"token":     "0xf55bec9cafdbe8730f096aa55dad6d22d44099df", // USDT address
 			},
 		}
 
@@ -464,7 +466,7 @@ func TestPaymasterController_TokenPayments(t *testing.T) {
 		router := setupPaymasterTestRouter(db)
 		createTestPolicy(t, db, "0.000000000000000001", 24) // Very low ETH limit
 
-		paymasterVerificationGasLimit, paymasterPostOpGasLimit := calculatePaymasterGasLimits(testUSDTAddress, testUSDTAddress)
+		paymasterVerificationGasLimit, paymasterPostOpGasLimit := calculatePaymasterGasLimits(testUSDTAddress, testUSDTAddress, testUSDCAddress)
 		userOp := createTestUserOpWithPaymasterGasLimits(
 			testSenderAddress1,
 			1,
@@ -485,7 +487,7 @@ func TestPaymasterController_TokenPayments(t *testing.T) {
 			"0x82750", // Chain ID (Scroll mainnet)
 			map[string]interface{}{
 				"policy_id": 1,
-				"token":     "0x06eFdBFf2a14a7c8E15944D1F4A48F9F95F663A4", // USDT address
+				"token":     "0x06eFdBFf2a14a7c8E15944D1F4A48F9F95F663A4", // USDC address
 			},
 		}
 
