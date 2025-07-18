@@ -539,7 +539,7 @@ func (pc *PaymasterController) buildAndSignPaymasterData(userOp *types.Paymaster
 	// Configuration flags
 	allowAnyBundler := true
 	precheckBalance := true
-	prepaymentRequired := false
+	prepaymentRequired := true
 
 	// Set default values for ETH
 	exchangeRate := big.NewInt(0) // Zero for ETH
