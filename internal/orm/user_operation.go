@@ -64,18 +64,48 @@ func (u *UserOperation) CreateOrUpdate(ctx context.Context, userOp *UserOperatio
 		Create(userOp).Error
 }
 
-// GetWalletUsage calculates the ETH amount used by a specific sender within the time window for a specific policy
-func (u *UserOperation) GetWalletUsage(ctx context.Context, apiKey string, policyID int64, sender string, timeWindowHours int) (int64, error) {
-	var usage int64
+// WalletUsageStats represents the usage statistics for a wallet
+type WalletUsageStats struct {
+	TransactionCount        int64      `json:"transaction_count" gorm:"column:count"`
+	TotalWeiAmount          int64      `json:"total_wei_amount" gorm:"column:total_wei_amount"`
+	EarliestTransactionTime *time.Time `json:"earliest_transaction_time,omitempty" gorm:"column:earliest_transaction_time"`
+}
+
+// GetWalletUsageStats gets both transaction count and total wei amount in a single query
+func (u *UserOperation) GetWalletUsageStats(ctx context.Context, apiKey string, policyID int64, sender string, timeWindowHours int) (*WalletUsageStats, error) {
+	// Use a temporary struct to handle SQLite string time type
+	var tempResult struct {
+		Count          int64  `gorm:"column:count"`
+		TotalWeiAmount int64  `gorm:"column:total_wei_amount"`
+		EarliestTime   string `gorm:"column:earliest_transaction_time"`
+	}
+
 	apiKeyHash := crypto.Keccak256Hash([]byte(apiKey)).Hex()
-	err := u.db.WithContext(ctx).
+	timeThreshold := time.Now().UTC().Add(time.Duration(-timeWindowHours) * time.Hour)
+
+	if err := u.db.WithContext(ctx).
 		Model(&UserOperation{}).
-		Select("COALESCE(SUM(wei_amount), 0)").
+		Select("COUNT(*) as count, COALESCE(SUM(wei_amount), 0) as total_wei_amount, MIN(updated_at) as earliest_transaction_time").
 		Where("api_key_hash = ?", apiKeyHash).
 		Where("policy_id = ?", policyID).
 		Where("sender = ?", sender).
-		Where("updated_at >= ?", time.Now().UTC().Add(time.Duration(-timeWindowHours)*time.Hour)).
-		Scan(&usage).Error
+		Where("updated_at >= ?", timeThreshold).
+		Scan(&tempResult).Error; err != nil {
+		return nil, err
+	}
 
-	return usage, err
+	result := &WalletUsageStats{
+		TransactionCount: tempResult.Count,
+		TotalWeiAmount:   tempResult.TotalWeiAmount,
+	}
+
+	if tempResult.EarliestTime != "" {
+		if parsedTime, err := time.Parse("2006-01-02 15:04:05.999999999-07:00", tempResult.EarliestTime); err == nil {
+			result.EarliestTransactionTime = &parsedTime
+		} else if parsedTime, err := time.Parse("2006-01-02 15:04:05", tempResult.EarliestTime); err == nil {
+			result.EarliestTransactionTime = &parsedTime
+		}
+	}
+
+	return result, nil
 }
