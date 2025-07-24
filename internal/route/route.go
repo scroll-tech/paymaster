@@ -31,8 +31,17 @@ func Route(router *gin.Engine, conf *config.Config) {
 	rootGroup := router.Group("")
 
 	registerRootRoutes(rootGroup, conf)
+	registerAPIRoutes(rootGroup, conf)
 }
 
 func registerRootRoutes(rootGroup *gin.RouterGroup, conf *config.Config) {
 	rootGroup.POST("/", middleware.AuthMiddleware(conf), middleware.RateLimiter(conf), controller.UnifiedHandler)
+}
+
+func registerAPIRoutes(rootGroup *gin.RouterGroup, conf *config.Config) {
+	apiGroup := rootGroup.Group("/api")
+	apiGroup.Use(middleware.AuthMiddleware(conf))
+
+	// Usage stats endpoint
+	apiGroup.GET("/usage/:address/:policyId", controller.GetUsageStats)
 }

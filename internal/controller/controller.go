@@ -2,6 +2,8 @@
 package controller
 
 import (
+	"strconv"
+
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
@@ -66,4 +68,40 @@ func UnifiedHandler(c *gin.Context) {
 		log.Debug("Method not found", "method", req.Method)
 		types.SendError(c, req.ID, types.MethodNotFoundCode, "Method not found: "+req.Method)
 	}
+}
+
+// GetUsageStats handles GET /api/usage/:address/:policyId requests
+func GetUsageStats(c *gin.Context) {
+	// Get API key from middleware
+	apiKeyRaw, exists := c.Get("api_key")
+	if !exists {
+		types.SendError(c, nil, types.UnauthorizedErrorCode, "Unauthorized: API key required")
+		return
+	}
+
+	apiKey, ok := apiKeyRaw.(string)
+	if !ok || apiKey == "" {
+		types.SendError(c, nil, types.UnauthorizedErrorCode, "Unauthorized: Invalid API key format")
+		return
+	}
+
+	address := c.Param("address")
+	if address == "" {
+		types.SendError(c, nil, types.InvalidParamsCode, "Address required")
+		return
+	}
+
+	policyIDStr := c.Param("policyId")
+	if policyIDStr == "" {
+		types.SendError(c, nil, types.InvalidParamsCode, "Policy ID required")
+		return
+	}
+
+	policyID, err := strconv.ParseInt(policyIDStr, 10, 64)
+	if err != nil {
+		types.SendError(c, nil, types.InvalidParamsCode, "Invalid policy ID")
+		return
+	}
+
+	paymasterCtl.GetUsageStats(c, apiKey, address, policyID)
 }
