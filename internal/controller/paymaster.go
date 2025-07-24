@@ -197,9 +197,14 @@ func (pc *PaymasterController) checkQuota(ctx context.Context, apiKey string, po
 	}
 
 	// Get current usage
-	currentUsageWei, err := pc.userOperationOrm.GetWalletUsage(ctx, apiKey, policyID, sender.Hex(), policy.Limits.TimeWindowHours)
+	usageStats, err := pc.userOperationOrm.GetWalletUsageStats(ctx, apiKey, policyID, sender.Hex(), policy.Limits.TimeWindowHours)
 	if err != nil {
-		return fmt.Errorf("failed to get current usage: %w", err)
+		return fmt.Errorf("failed to get wallet usage stats for policy %d and sender %s: %w", policyID, sender.Hex(), err)
+	}
+
+	if usageStats.TransactionCount >= policy.Limits.MaxTransactionsPerWalletPerWindow {
+		log.Debug("Transaction count quota exceeded", "sender", sender.Hex(), "current_count", usageStats.TransactionCount, "max_count", policy.Limits.MaxTransactionsPerWalletPerWindow)
+		return fmt.Errorf("transaction count quota exceeded: sender %s has %d transactions with time window %d hours, limit is %d transactions, policy_id: %d", sender.Hex(), usageStats.TransactionCount, policy.Limits.TimeWindowHours, policy.Limits.MaxTransactionsPerWalletPerWindow, policyID)
 	}
 
 	// Parse max limit from ETH to wei
@@ -216,17 +221,17 @@ func (pc *PaymasterController) checkQuota(ctx context.Context, apiKey string, po
 	}
 
 	// Check if new operation would exceed limit
-	currentUsage := big.NewInt(currentUsageWei)
+	currentUsage := big.NewInt(usageStats.TotalWeiAmount)
 	newTotal := new(big.Int).Add(currentUsage, weiAmount)
 
 	if newTotal.Cmp(maxLimitWei) > 0 {
-		log.Debug("Quota exceeded", "sender", sender.Hex(), "current_usage_wei", currentUsage.String(), "estimated_wei", weiAmount.String(), "new_total_wei", newTotal.String(), "max_limit_wei", maxLimitWei.String(), "max_limit_eth", policy.Limits.MaxEthPerWalletPerWindow)
+		log.Debug("ETH quota exceeded", "sender", sender.Hex(), "current_usage_wei", currentUsage.String(), "estimated_wei", weiAmount.String(), "new_total_wei", newTotal.String(), "max_limit_wei", maxLimitWei.String(), "max_limit_eth", policy.Limits.MaxEthPerWalletPerWindow)
 
 		// Convert back to ETH for user-friendly error message
 		currentUsageEth := new(big.Float).Quo(new(big.Float).SetInt(currentUsage), new(big.Float).SetInt(weiPerEth))
 		newTotalEth := new(big.Float).Quo(new(big.Float).SetInt(newTotal), new(big.Float).SetInt(weiPerEth))
 
-		return fmt.Errorf("quota exceeded: current usage %.6f ETH + new operation would total %.6f ETH, limit is %s ETH", currentUsageEth, newTotalEth, policy.Limits.MaxEthPerWalletPerWindow)
+		return fmt.Errorf("ETH quota exceeded: current usage %.6f ETH + new operation would total %.6f ETH, limit is %s ETH", currentUsageEth, newTotalEth, policy.Limits.MaxEthPerWalletPerWindow)
 	}
 
 	return nil

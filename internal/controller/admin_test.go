@@ -111,8 +111,9 @@ func TestAdminController_Integration(t *testing.T) {
 			"policy_id":   1,
 			"policy_name": "Test Policy",
 			"limits": map[string]interface{}{
-				"max_eth_per_wallet_per_window": "0.1",
-				"time_window_hours":             24,
+				"max_eth_per_wallet_per_window":          "0.1",
+				"max_transactions_per_wallet_per_window": 100,
+				"time_window_hours":                      24,
 			},
 		}
 
@@ -140,8 +141,9 @@ func TestAdminController_Integration(t *testing.T) {
 			"policy_id":   10,
 			"policy_name": "Get Test Policy",
 			"limits": map[string]interface{}{
-				"max_eth_per_wallet_per_window": "0.5",
-				"time_window_hours":             48,
+				"max_eth_per_wallet_per_window":          "0.5",
+				"max_transactions_per_wallet_per_window": 200,
+				"time_window_hours":                      48,
 			},
 		}
 
@@ -173,6 +175,7 @@ func TestAdminController_Integration(t *testing.T) {
 		assert.Equal(t, int64(10), policy.PolicyID)
 		assert.Equal(t, "Get Test Policy", policy.PolicyName)
 		assert.Equal(t, "0.5", policy.Limits.MaxEthPerWalletPerWindow)
+		assert.Equal(t, int64(200), policy.Limits.MaxTransactionsPerWalletPerWindow)
 		assert.Equal(t, int(48), policy.Limits.TimeWindowHours)
 	})
 
@@ -186,16 +189,18 @@ func TestAdminController_Integration(t *testing.T) {
 				"policy_id":   20,
 				"policy_name": "List Test Policy 1",
 				"limits": map[string]interface{}{
-					"max_eth_per_wallet_per_window": "0.1",
-					"time_window_hours":             24,
+					"max_eth_per_wallet_per_window":          "0.1",
+					"max_transactions_per_wallet_per_window": 50,
+					"time_window_hours":                      24,
 				},
 			},
 			{
 				"policy_id":   21,
 				"policy_name": "List Test Policy 2",
 				"limits": map[string]interface{}{
-					"max_eth_per_wallet_per_window": "0.2",
-					"time_window_hours":             48,
+					"max_eth_per_wallet_per_window":          "0.2",
+					"max_transactions_per_wallet_per_window": 150,
+					"time_window_hours":                      48,
 				},
 			},
 		}
@@ -236,6 +241,7 @@ func TestAdminController_Integration(t *testing.T) {
 		assert.NotEmpty(t, policy1.CreatedAt)
 		assert.NotEmpty(t, policy1.UpdatedAt)
 		assert.Equal(t, "0.1", policy1.Limits.MaxEthPerWalletPerWindow)
+		assert.Equal(t, int64(50), policy1.Limits.MaxTransactionsPerWalletPerWindow)
 		assert.Equal(t, int(24), policy1.Limits.TimeWindowHours)
 
 		// Verify Policy 2 (ID: 21)
@@ -245,6 +251,7 @@ func TestAdminController_Integration(t *testing.T) {
 		assert.NotEmpty(t, policy2.CreatedAt)
 		assert.NotEmpty(t, policy2.UpdatedAt)
 		assert.Equal(t, "0.2", policy2.Limits.MaxEthPerWalletPerWindow)
+		assert.Equal(t, int64(150), policy2.Limits.MaxTransactionsPerWalletPerWindow)
 		assert.Equal(t, int(48), policy2.Limits.TimeWindowHours)
 	})
 
@@ -257,8 +264,9 @@ func TestAdminController_Integration(t *testing.T) {
 			"policy_id":   30,
 			"policy_name": "Update Test Policy",
 			"limits": map[string]interface{}{
-				"max_eth_per_wallet_per_window": "0.1",
-				"time_window_hours":             24,
+				"max_eth_per_wallet_per_window":          "0.1",
+				"max_transactions_per_wallet_per_window": 100,
+				"time_window_hours":                      24,
 			},
 		}
 
@@ -270,8 +278,9 @@ func TestAdminController_Integration(t *testing.T) {
 			"policy_id":   30,
 			"policy_name": "Updated Policy Name",
 			"limits": map[string]interface{}{
-				"max_eth_per_wallet_per_window": "0.2",
-				"time_window_hours":             48,
+				"max_eth_per_wallet_per_window":          "0.2",
+				"max_transactions_per_wallet_per_window": 250,
+				"time_window_hours":                      48,
 			},
 		}
 
@@ -308,6 +317,7 @@ func TestAdminController_Integration(t *testing.T) {
 
 		assert.Equal(t, "Updated Policy Name", policy.PolicyName)
 		assert.Equal(t, "0.2", policy.Limits.MaxEthPerWalletPerWindow)
+		assert.Equal(t, int64(250), policy.Limits.MaxTransactionsPerWalletPerWindow)
 		assert.Equal(t, int(48), policy.Limits.TimeWindowHours)
 	})
 
@@ -320,8 +330,9 @@ func TestAdminController_Integration(t *testing.T) {
 			"policy_id":   40,
 			"policy_name": "Delete Test Policy",
 			"limits": map[string]interface{}{
-				"max_eth_per_wallet_per_window": "0.1",
-				"time_window_hours":             24,
+				"max_eth_per_wallet_per_window":          "0.1",
+				"max_transactions_per_wallet_per_window": 100,
+				"time_window_hours":                      24,
 			},
 		}
 
@@ -369,8 +380,9 @@ func TestValidatePolicyLimits(t *testing.T) {
 
 	t.Run("ValidLimits", func(t *testing.T) {
 		limits := &orm.PolicyLimits{
-			MaxEthPerWalletPerWindow: "1.5",
-			TimeWindowHours:          24,
+			MaxEthPerWalletPerWindow:          "1.5",
+			MaxTransactionsPerWalletPerWindow: 1000,
+			TimeWindowHours:                   24,
 		}
 
 		err := ac.validatePolicyLimits(limits)
@@ -379,8 +391,9 @@ func TestValidatePolicyLimits(t *testing.T) {
 
 	t.Run("MinimalValidLimits", func(t *testing.T) {
 		limits := &orm.PolicyLimits{
-			MaxEthPerWalletPerWindow: "0.000000000000000001", // 1 wei
-			TimeWindowHours:          1,
+			MaxEthPerWalletPerWindow:          "0.000000000000000001", // 1 wei
+			MaxTransactionsPerWalletPerWindow: 1,
+			TimeWindowHours:                   1,
 		}
 
 		err := ac.validatePolicyLimits(limits)
@@ -389,8 +402,9 @@ func TestValidatePolicyLimits(t *testing.T) {
 
 	t.Run("MaximalValidLimits", func(t *testing.T) {
 		limits := &orm.PolicyLimits{
-			MaxEthPerWalletPerWindow: "1000.123456789012345678", // 18 decimal places
-			TimeWindowHours:          8760,                      // 1 year
+			MaxEthPerWalletPerWindow:          "1000.123456789012345678", // 18 decimal places
+			MaxTransactionsPerWalletPerWindow: 1000000,                   // 1 million
+			TimeWindowHours:                   8760,                      // 1 year
 		}
 
 		err := ac.validatePolicyLimits(limits)
@@ -399,8 +413,9 @@ func TestValidatePolicyLimits(t *testing.T) {
 
 	t.Run("ExactWeiPrecision", func(t *testing.T) {
 		limits := &orm.PolicyLimits{
-			MaxEthPerWalletPerWindow: "0.000000000000000123", // Exactly representable in wei
-			TimeWindowHours:          24,
+			MaxEthPerWalletPerWindow:          "0.000000000000000123", // Exactly representable in wei
+			MaxTransactionsPerWalletPerWindow: 50,
+			TimeWindowHours:                   24,
 		}
 
 		err := ac.validatePolicyLimits(limits)
@@ -417,8 +432,9 @@ func TestAdminController_Integration_InvalidCases(t *testing.T) {
 		params := map[string]interface{}{
 			"policy_name": "Test Policy",
 			"limits": map[string]interface{}{
-				"max_eth_per_wallet_per_window": "0.1",
-				"time_window_hours":             24,
+				"max_eth_per_wallet_per_window":          "0.1",
+				"max_transactions_per_wallet_per_window": 100,
+				"time_window_hours":                      24,
 			},
 		}
 
@@ -441,8 +457,9 @@ func TestAdminController_Integration_InvalidCases(t *testing.T) {
 		params := map[string]interface{}{
 			"policy_id": 100,
 			"limits": map[string]interface{}{
-				"max_eth_per_wallet_per_window": "0.1",
-				"time_window_hours":             24,
+				"max_eth_per_wallet_per_window":          "0.1",
+				"max_transactions_per_wallet_per_window": 100,
+				"time_window_hours":                      24,
 			},
 		}
 
@@ -458,6 +475,32 @@ func TestAdminController_Integration_InvalidCases(t *testing.T) {
 		assert.Contains(t, resp.Error.Message, "policy_name is required")
 	})
 
+	t.Run("CreatePolicy_MissingTransactionLimit", func(t *testing.T) {
+		db := setupTestDB(t)
+		router := setupTestRouter(db)
+
+		params := map[string]interface{}{
+			"policy_id":   101,
+			"policy_name": "Test Policy",
+			"limits": map[string]interface{}{
+				"max_eth_per_wallet_per_window": "0.1",
+				"time_window_hours":             24,
+				// Missing max_transactions_per_wallet_per_window
+			},
+		}
+
+		w := makeRequest(t, router, "pm_createPolicy", params)
+		assert.Equal(t, http.StatusOK, w.Code)
+
+		var resp types.PaymasterJSONRPCResponse
+		err := json.Unmarshal(w.Body.Bytes(), &resp)
+		require.NoError(t, err)
+
+		assert.NotNil(t, resp.Error)
+		assert.Equal(t, types.PolicyValidationErrorCode, resp.Error.Code)
+		assert.Contains(t, resp.Error.Message, "max_transactions_per_wallet_per_window must be positive")
+	})
+
 	t.Run("CreatePolicy_NegativePolicyID", func(t *testing.T) {
 		db := setupTestDB(t)
 		router := setupTestRouter(db)
@@ -466,8 +509,9 @@ func TestAdminController_Integration_InvalidCases(t *testing.T) {
 			"policy_id":   -1,
 			"policy_name": "Test Policy",
 			"limits": map[string]interface{}{
-				"max_eth_per_wallet_per_window": "0.1",
-				"time_window_hours":             24,
+				"max_eth_per_wallet_per_window":          "0.1",
+				"max_transactions_per_wallet_per_window": 100,
+				"time_window_hours":                      24,
 			},
 		}
 
@@ -483,16 +527,17 @@ func TestAdminController_Integration_InvalidCases(t *testing.T) {
 		assert.Contains(t, resp.Error.Message, "policy_id must be positive")
 	})
 
-	t.Run("CreatePolicy_ValidationError", func(t *testing.T) {
+	t.Run("CreatePolicy_ValidationError_ZeroEth", func(t *testing.T) {
 		db := setupTestDB(t)
 		router := setupTestRouter(db)
 
 		params := map[string]interface{}{
-			"policy_id":   101,
+			"policy_id":   102,
 			"policy_name": "Invalid Policy",
 			"limits": map[string]interface{}{
-				"max_eth_per_wallet_per_window": "0", // Invalid: must be > 0
-				"time_window_hours":             24,
+				"max_eth_per_wallet_per_window":          "0", // Invalid: must be > 0
+				"max_transactions_per_wallet_per_window": 100,
+				"time_window_hours":                      24,
 			},
 		}
 
@@ -506,6 +551,58 @@ func TestAdminController_Integration_InvalidCases(t *testing.T) {
 		assert.NotNil(t, resp.Error)
 		assert.Equal(t, types.PolicyValidationErrorCode, resp.Error.Code)
 		assert.Contains(t, resp.Error.Message, "must be positive")
+	})
+
+	t.Run("CreatePolicy_ValidationError_ZeroTransactions", func(t *testing.T) {
+		db := setupTestDB(t)
+		router := setupTestRouter(db)
+
+		params := map[string]interface{}{
+			"policy_id":   103,
+			"policy_name": "Invalid Policy",
+			"limits": map[string]interface{}{
+				"max_eth_per_wallet_per_window":          "0.1",
+				"max_transactions_per_wallet_per_window": 0, // Invalid: must be > 0
+				"time_window_hours":                      24,
+			},
+		}
+
+		w := makeRequest(t, router, "pm_createPolicy", params)
+		assert.Equal(t, http.StatusOK, w.Code)
+
+		var resp types.PaymasterJSONRPCResponse
+		err := json.Unmarshal(w.Body.Bytes(), &resp)
+		require.NoError(t, err)
+
+		assert.NotNil(t, resp.Error)
+		assert.Equal(t, types.PolicyValidationErrorCode, resp.Error.Code)
+		assert.Contains(t, resp.Error.Message, "max_transactions_per_wallet_per_window must be positive")
+	})
+
+	t.Run("CreatePolicy_ValidationError_NegativeTransactions", func(t *testing.T) {
+		db := setupTestDB(t)
+		router := setupTestRouter(db)
+
+		params := map[string]interface{}{
+			"policy_id":   104,
+			"policy_name": "Invalid Policy",
+			"limits": map[string]interface{}{
+				"max_eth_per_wallet_per_window":          "0.1",
+				"max_transactions_per_wallet_per_window": -10, // Invalid: negative
+				"time_window_hours":                      24,
+			},
+		}
+
+		w := makeRequest(t, router, "pm_createPolicy", params)
+		assert.Equal(t, http.StatusOK, w.Code)
+
+		var resp types.PaymasterJSONRPCResponse
+		err := json.Unmarshal(w.Body.Bytes(), &resp)
+		require.NoError(t, err)
+
+		assert.NotNil(t, resp.Error)
+		assert.Equal(t, types.PolicyValidationErrorCode, resp.Error.Code)
+		assert.Contains(t, resp.Error.Message, "max_transactions_per_wallet_per_window must be positive")
 	})
 
 	t.Run("GetPolicyByID_NotFound", func(t *testing.T) {
@@ -592,11 +689,12 @@ func TestAdminController_Integration_InvalidCases(t *testing.T) {
 
 		// First create a policy
 		createParams := map[string]interface{}{
-			"policy_id":   102,
+			"policy_id":   105,
 			"policy_name": "Test Policy for Update",
 			"limits": map[string]interface{}{
-				"max_eth_per_wallet_per_window": "0.1",
-				"time_window_hours":             24,
+				"max_eth_per_wallet_per_window":          "0.1",
+				"max_transactions_per_wallet_per_window": 100,
+				"time_window_hours":                      24,
 			},
 		}
 
@@ -605,7 +703,7 @@ func TestAdminController_Integration_InvalidCases(t *testing.T) {
 
 		// Try to update without any parameters
 		updateParams := map[string]interface{}{
-			"policy_id": 102,
+			"policy_id": 105,
 		}
 
 		w = makeRequest(t, router, "pm_updatePolicy", updateParams)
@@ -626,11 +724,12 @@ func TestAdminController_Integration_InvalidCases(t *testing.T) {
 
 		// First create a policy
 		createParams := map[string]interface{}{
-			"policy_id":   103,
+			"policy_id":   106,
 			"policy_name": "Test Policy for Update",
 			"limits": map[string]interface{}{
-				"max_eth_per_wallet_per_window": "0.1",
-				"time_window_hours":             24,
+				"max_eth_per_wallet_per_window":          "0.1",
+				"max_transactions_per_wallet_per_window": 100,
+				"time_window_hours":                      24,
 			},
 		}
 
@@ -639,10 +738,11 @@ func TestAdminController_Integration_InvalidCases(t *testing.T) {
 
 		// Try to update with invalid limits
 		updateParams := map[string]interface{}{
-			"policy_id": 103,
+			"policy_id": 106,
 			"limits": map[string]interface{}{
-				"max_eth_per_wallet_per_window": "-1", // Invalid: negative value
-				"time_window_hours":             24,
+				"max_eth_per_wallet_per_window":          "-1", // Invalid: negative value
+				"max_transactions_per_wallet_per_window": -5,   // Invalid: negative value
+				"time_window_hours":                      24,
 			},
 		}
 
@@ -655,7 +755,11 @@ func TestAdminController_Integration_InvalidCases(t *testing.T) {
 
 		assert.NotNil(t, resp.Error)
 		assert.Equal(t, types.PolicyValidationErrorCode, resp.Error.Code)
-		assert.Contains(t, resp.Error.Message, "must be positive")
+		// Should contain error about either eth or transaction limit being invalid
+		assert.True(t,
+			assert.ObjectsAreEqual(true, resp.Error.Message) ||
+				assert.Contains(t, resp.Error.Message, "must be positive") ||
+				assert.Contains(t, resp.Error.Message, "max_transactions_per_wallet_per_window must be positive"))
 	})
 
 	t.Run("DeletePolicy_NotFound", func(t *testing.T) {
@@ -744,8 +848,9 @@ func TestValidatePolicyLimits_InvalidCases(t *testing.T) {
 
 	t.Run("EmptyMaxEth", func(t *testing.T) {
 		limits := &orm.PolicyLimits{
-			MaxEthPerWalletPerWindow: "",
-			TimeWindowHours:          24,
+			MaxEthPerWalletPerWindow:          "",
+			MaxTransactionsPerWalletPerWindow: 100,
+			TimeWindowHours:                   24,
 		}
 
 		err := ac.validatePolicyLimits(limits)
@@ -755,8 +860,9 @@ func TestValidatePolicyLimits_InvalidCases(t *testing.T) {
 
 	t.Run("InvalidMaxEthFormat", func(t *testing.T) {
 		limits := &orm.PolicyLimits{
-			MaxEthPerWalletPerWindow: "invalid",
-			TimeWindowHours:          24,
+			MaxEthPerWalletPerWindow:          "invalid",
+			MaxTransactionsPerWalletPerWindow: 100,
+			TimeWindowHours:                   24,
 		}
 
 		err := ac.validatePolicyLimits(limits)
@@ -766,8 +872,9 @@ func TestValidatePolicyLimits_InvalidCases(t *testing.T) {
 
 	t.Run("ZeroMaxEth", func(t *testing.T) {
 		limits := &orm.PolicyLimits{
-			MaxEthPerWalletPerWindow: "0",
-			TimeWindowHours:          24,
+			MaxEthPerWalletPerWindow:          "0",
+			MaxTransactionsPerWalletPerWindow: 100,
+			TimeWindowHours:                   24,
 		}
 
 		err := ac.validatePolicyLimits(limits)
@@ -777,8 +884,9 @@ func TestValidatePolicyLimits_InvalidCases(t *testing.T) {
 
 	t.Run("NegativeMaxEth", func(t *testing.T) {
 		limits := &orm.PolicyLimits{
-			MaxEthPerWalletPerWindow: "-1",
-			TimeWindowHours:          24,
+			MaxEthPerWalletPerWindow:          "-1",
+			MaxTransactionsPerWalletPerWindow: 100,
+			TimeWindowHours:                   24,
 		}
 
 		err := ac.validatePolicyLimits(limits)
@@ -786,10 +894,35 @@ func TestValidatePolicyLimits_InvalidCases(t *testing.T) {
 		assert.Contains(t, err.Error(), "must be positive")
 	})
 
+	t.Run("ZeroMaxTransactions", func(t *testing.T) {
+		limits := &orm.PolicyLimits{
+			MaxEthPerWalletPerWindow:          "1.0",
+			MaxTransactionsPerWalletPerWindow: 0,
+			TimeWindowHours:                   24,
+		}
+
+		err := ac.validatePolicyLimits(limits)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "max_transactions_per_wallet_per_window must be positive")
+	})
+
+	t.Run("NegativeMaxTransactions", func(t *testing.T) {
+		limits := &orm.PolicyLimits{
+			MaxEthPerWalletPerWindow:          "1.0",
+			MaxTransactionsPerWalletPerWindow: -10,
+			TimeWindowHours:                   24,
+		}
+
+		err := ac.validatePolicyLimits(limits)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "max_transactions_per_wallet_per_window must be positive")
+	})
+
 	t.Run("TooManyDecimals", func(t *testing.T) {
 		limits := &orm.PolicyLimits{
-			MaxEthPerWalletPerWindow: "1.0000000000000000001", // 19 decimal places
-			TimeWindowHours:          24,
+			MaxEthPerWalletPerWindow:          "1.0000000000000000001", // 19 decimal places
+			MaxTransactionsPerWalletPerWindow: 100,
+			TimeWindowHours:                   24,
 		}
 
 		err := ac.validatePolicyLimits(limits)
@@ -799,9 +932,9 @@ func TestValidatePolicyLimits_InvalidCases(t *testing.T) {
 
 	t.Run("BelowMinimumWei", func(t *testing.T) {
 		limits := &orm.PolicyLimits{
-			// Use a value that has <=18 decimal places but is less than 1 wei
-			MaxEthPerWalletPerWindow: "0.000000000000000000", // 0 wei, 18 decimal places
-			TimeWindowHours:          24,
+			MaxEthPerWalletPerWindow:          "0.000000000000000000", // 0 wei, 18 decimal places
+			MaxTransactionsPerWalletPerWindow: 100,
+			TimeWindowHours:                   24,
 		}
 
 		err := ac.validatePolicyLimits(limits)
@@ -812,8 +945,9 @@ func TestValidatePolicyLimits_InvalidCases(t *testing.T) {
 
 	t.Run("ZeroTimeWindow", func(t *testing.T) {
 		limits := &orm.PolicyLimits{
-			MaxEthPerWalletPerWindow: "1.0",
-			TimeWindowHours:          0,
+			MaxEthPerWalletPerWindow:          "1.0",
+			MaxTransactionsPerWalletPerWindow: 100,
+			TimeWindowHours:                   0,
 		}
 
 		err := ac.validatePolicyLimits(limits)
@@ -823,8 +957,9 @@ func TestValidatePolicyLimits_InvalidCases(t *testing.T) {
 
 	t.Run("NegativeTimeWindow", func(t *testing.T) {
 		limits := &orm.PolicyLimits{
-			MaxEthPerWalletPerWindow: "1.0",
-			TimeWindowHours:          -1,
+			MaxEthPerWalletPerWindow:          "1.0",
+			MaxTransactionsPerWalletPerWindow: 100,
+			TimeWindowHours:                   -1,
 		}
 
 		err := ac.validatePolicyLimits(limits)
@@ -834,8 +969,9 @@ func TestValidatePolicyLimits_InvalidCases(t *testing.T) {
 
 	t.Run("ExcessiveTimeWindow", func(t *testing.T) {
 		limits := &orm.PolicyLimits{
-			MaxEthPerWalletPerWindow: "1.0",
-			TimeWindowHours:          9000,
+			MaxEthPerWalletPerWindow:          "1.0",
+			MaxTransactionsPerWalletPerWindow: 100,
+			TimeWindowHours:                   9000,
 		}
 
 		err := ac.validatePolicyLimits(limits)
@@ -843,10 +979,23 @@ func TestValidatePolicyLimits_InvalidCases(t *testing.T) {
 		assert.Contains(t, err.Error(), "cannot exceed 8760 hours")
 	})
 
+	t.Run("ExcessiveTransactionLimit", func(t *testing.T) {
+		limits := &orm.PolicyLimits{
+			MaxEthPerWalletPerWindow:          "1.0",
+			MaxTransactionsPerWalletPerWindow: 1000001, // Over 1 million
+			TimeWindowHours:                   24,
+		}
+
+		err := ac.validatePolicyLimits(limits)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "cannot exceed 1000000")
+	})
+
 	t.Run("SpecialFloatValues", func(t *testing.T) {
 		limits := &orm.PolicyLimits{
-			MaxEthPerWalletPerWindow: "NaN",
-			TimeWindowHours:          24,
+			MaxEthPerWalletPerWindow:          "NaN",
+			MaxTransactionsPerWalletPerWindow: 100,
+			TimeWindowHours:                   24,
 		}
 
 		err := ac.validatePolicyLimits(limits)
@@ -857,8 +1006,9 @@ func TestValidatePolicyLimits_InvalidCases(t *testing.T) {
 	t.Run("ScientificNotationValid", func(t *testing.T) {
 		// Test valid scientific notation
 		limits := &orm.PolicyLimits{
-			MaxEthPerWalletPerWindow: "1e-18", // 1 wei in ETH
-			TimeWindowHours:          24,
+			MaxEthPerWalletPerWindow:          "1e-18", // 1 wei in ETH
+			MaxTransactionsPerWalletPerWindow: 100,
+			TimeWindowHours:                   24,
 		}
 
 		err := ac.validatePolicyLimits(limits)
@@ -868,8 +1018,9 @@ func TestValidatePolicyLimits_InvalidCases(t *testing.T) {
 	t.Run("ScientificNotationInvalid", func(t *testing.T) {
 		// Test invalid scientific notation with too much precision
 		limits := &orm.PolicyLimits{
-			MaxEthPerWalletPerWindow: "1e-19", // Less than 1 wei
-			TimeWindowHours:          24,
+			MaxEthPerWalletPerWindow:          "1e-19", // Less than 1 wei
+			MaxTransactionsPerWalletPerWindow: 100,
+			TimeWindowHours:                   24,
 		}
 
 		err := ac.validatePolicyLimits(limits)
