@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/ecdsa"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -239,11 +240,14 @@ func (pc *PaymasterController) checkQuota(ctx context.Context, apiKey string, po
 
 // createOrUpdateRecord creates or updates the operation record
 func (pc *PaymasterController) createOrUpdateRecord(ctx context.Context, apiKey string, policyID int64, sender common.Address, nonce *big.Int, weiAmount *big.Int, status orm.UserOperationStatus) error {
+	nonceHash := crypto.Keccak256(nonce.Bytes())
+	hashedNonce := int64(binary.BigEndian.Uint64(nonceHash[:8]))
+
 	userOp := &orm.UserOperation{
 		APIKeyHash: crypto.Keccak256Hash([]byte(apiKey)).Hex(),
 		PolicyID:   policyID,
 		Sender:     sender.Hex(),
-		Nonce:      nonce.Int64(),
+		Nonce:      hashedNonce,
 		WeiAmount:  weiAmount.Int64(),
 		Status:     status,
 	}
