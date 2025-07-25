@@ -16,7 +16,7 @@ import (
 	"github.com/scroll-tech/paymaster/internal/config"
 )
 
-func setupUsageStatsTestRouter(db *gorm.DB) (*gin.Engine, *PaymasterController) {
+func setupUsageStatsTestRouter(db *gorm.DB) *gin.Engine {
 	cfg := &config.Config{
 		APIKeys:          []string{"test-api-key"},
 		SignerPrivateKey: "ac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80",
@@ -49,7 +49,7 @@ func setupUsageStatsTestRouter(db *gorm.DB) (*gin.Engine, *PaymasterController) 
 		paymasterController.GetUsageStats(c, apiKey, address, policyID)
 	})
 
-	return router, paymasterController
+	return router
 }
 
 func makeUsageStatsRequest(router *gin.Engine, address string, policyID int64) *httptest.ResponseRecorder {
@@ -61,7 +61,7 @@ func makeUsageStatsRequest(router *gin.Engine, address string, policyID int64) *
 
 func TestGetUsageStats_WithinRateLimit(t *testing.T) {
 	db := setupTestDB(t)
-	router, _ := setupUsageStatsTestRouter(db)
+	router := setupUsageStatsTestRouter(db)
 
 	// Create policy with reasonable limits
 	createTestPolicy(t, db, "1.0", 24, 10) // 1 ETH limit, 10 transactions, 24 hours
@@ -101,7 +101,7 @@ func TestGetUsageStats_WithinRateLimit(t *testing.T) {
 
 func TestGetUsageStats_ExceededTransactionLimit(t *testing.T) {
 	db := setupTestDB(t)
-	router, _ := setupUsageStatsTestRouter(db)
+	router := setupUsageStatsTestRouter(db)
 
 	// Create policy with low transaction limit
 	createTestPolicy(t, db, "10.0", 24, 5) // 10 ETH limit, 5 transactions, 24 hours
@@ -130,12 +130,11 @@ func TestGetUsageStats_ExceededTransactionLimit(t *testing.T) {
 	assert.Equal(t, true, response["rate_limited"])
 	assert.Equal(t, "Transaction count limit exceeded", response["rate_limit_reason"])
 	assert.NotNil(t, response["earliest_transaction_time"])
-
 }
 
 func TestGetUsageStats_ExceededETHLimit(t *testing.T) {
 	db := setupTestDB(t)
-	router, _ := setupUsageStatsTestRouter(db)
+	router := setupUsageStatsTestRouter(db)
 
 	// Create policy with low ETH limit
 	createTestPolicy(t, db, "0.001", 24, 100) // 0.001 ETH limit, 100 transactions, 24 hours

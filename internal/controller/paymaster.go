@@ -104,19 +104,12 @@ func (pc *PaymasterController) handleGetPaymasterStubData(c *gin.Context, req ty
 			types.SendError(c, req.ID, types.QuotaExceededErrorCode, "Quota exceeded")
 			return
 		}
-
-		// Create or update record
-		if err := pc.createOrUpdateRecord(c.Request.Context(), apiKey, policyID, params.Sender, params.Nonce.ToInt(), estimatedWei, orm.UserOperationStatusPaymasterStubDataProvided); err != nil {
-			log.Error("Failed to create or update operation record", "error", err, "sender", params.Sender.Hex(), "nonce", params.Nonce.String(), "policy_id", policyID)
-			types.SendError(c, req.ID, types.InternalErrorCode, "Operation failed")
-			return
-		}
 	} else {
 		log.Debug("Token payment detected, skipping quota check and record creation", "token", tokenAddr.Hex(), "sender", params.Sender.Hex(), "nonce", params.Nonce.String())
 	}
 
-	// Generate signed paymaster data for stub
-	paymasterData, err := pc.buildAndSignPaymasterData(params, tokenAddr, paymasterVerificationGasLimit, paymasterPostOpGasLimit)
+	// Generate signed paymaster data for stub, using outdated data
+	paymasterData, err := pc.buildAndSignPaymasterData(params, tokenAddr, paymasterVerificationGasLimit, paymasterPostOpGasLimit, true /* outdated */)
 	if err != nil {
 		log.Error("Failed to build and sign paymaster data for stub", "error", err)
 		types.SendError(c, req.ID, types.PaymasterDataGenErrorCode, "Failed to generate paymaster data")
@@ -172,8 +165,8 @@ func (pc *PaymasterController) handleGetPaymasterData(c *gin.Context, req types.
 		log.Debug("Token payment detected, skipping quota check and record creation", "token", tokenAddr.Hex(), "sender", params.Sender.Hex(), "nonce", params.Nonce.String())
 	}
 
-	// Generate signed paymaster data
-	paymasterData, err := pc.buildAndSignPaymasterData(params, tokenAddr, paymasterVerificationGasLimit, paymasterPostOpGasLimit)
+	// Generate signed paymaster data, using non-outdated data
+	paymasterData, err := pc.buildAndSignPaymasterData(params, tokenAddr, paymasterVerificationGasLimit, paymasterPostOpGasLimit, false /* not outdated */)
 	if err != nil {
 		log.Error("Failed to build and sign paymaster data", "error", err)
 		types.SendError(c, req.ID, types.PaymasterDataGenErrorCode, "Failed to generate paymaster data")
@@ -535,13 +528,18 @@ func (pc *PaymasterController) getChainlinkETHPrice(aggregatorAddress string) (*
 }
 
 // buildAndSignPaymasterData builds and signs paymaster data
-func (pc *PaymasterController) buildAndSignPaymasterData(userOp *types.PaymasterUserOperationV7, tokenAddr common.Address, paymasterVerificationGasLimit, paymasterPostOpGasLimit *big.Int) (string, error) {
+func (pc *PaymasterController) buildAndSignPaymasterData(userOp *types.PaymasterUserOperationV7, tokenAddr common.Address, paymasterVerificationGasLimit, paymasterPostOpGasLimit *big.Int, outdated bool) (string, error) {
 	// Current timestamp in seconds
 	currentTime := time.Now().Unix()
 
 	// Set validity window
 	validUntil := big.NewInt(currentTime + 3600) // current time + 1 hour
 	validAfter := big.NewInt(currentTime - 3600) // current time - 1 hour
+	if outdated {
+		log.Debug("Using outdated paymaster data, this is for giving stub data only")
+		validUntil = big.NewInt(currentTime - 7200)  // current time - 2 hours
+		validAfter = big.NewInt(currentTime - 10800) // current time - 3 hours
+	}
 
 	// Sponsor UUID, default to zero
 	sponsorUUID := big.NewInt(0)

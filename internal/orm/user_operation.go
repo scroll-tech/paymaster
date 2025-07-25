@@ -7,6 +7,7 @@ import (
 	"math/big"
 	"time"
 
+	"github.com/cloudflare/cfssl/log"
 	"github.com/ethereum/go-ethereum/crypto"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -75,15 +76,10 @@ type WalletUsageStats struct {
 
 // GetWalletUsageStats gets both transaction count and total wei amount in a single query
 func (u *UserOperation) GetWalletUsageStats(ctx context.Context, apiKey string, policyID int64, sender string, timeWindowHours int) (*WalletUsageStats, error) {
-	// Use a temporary struct to handle SQLite string time type
-	var tempResult struct {
-		Count          int64  `gorm:"column:count"`
-		TotalWeiAmount int64  `gorm:"column:total_wei_amount"`
-		EarliestTime   string `gorm:"column:earliest_transaction_time"`
-	}
-
 	apiKeyHash := crypto.Keccak256Hash([]byte(apiKey)).Hex()
 	timeThreshold := time.Now().UTC().Add(time.Duration(-timeWindowHours) * time.Hour)
+
+	result := &WalletUsageStats{}
 
 	if err := u.db.WithContext(ctx).
 		Model(&UserOperation{}).
@@ -92,29 +88,11 @@ func (u *UserOperation) GetWalletUsageStats(ctx context.Context, apiKey string, 
 		Where("policy_id = ?", policyID).
 		Where("sender = ?", sender).
 		Where("updated_at >= ?", timeThreshold).
-		Scan(&tempResult).Error; err != nil {
+		Scan(&result).Error; err != nil {
 		return nil, err
 	}
 
-	result := &WalletUsageStats{
-		TransactionCount: tempResult.Count,
-		TotalWeiAmount:   tempResult.TotalWeiAmount,
-	}
-
-	if tempResult.EarliestTime != "" {
-		timeFormats := []string{
-			"2006-01-02 15:04:05.999999999-07:00",
-			"2006-01-02 15:04:05.000",
-			"2006-01-02 15:04:05",
-		}
-
-		for _, format := range timeFormats {
-			if parsedTime, err := time.Parse(format, tempResult.EarliestTime); err == nil {
-				result.EarliestTransactionTime = &parsedTime
-				break
-			}
-		}
-	}
+	log.Debug("GetWalletUsageStats result", "count", result.TransactionCount, "total_wei_amount", result.TotalWeiAmount, "earliest_time", result.EarliestTransactionTime)
 
 	return result, nil
 }
@@ -122,19 +100,14 @@ func (u *UserOperation) GetWalletUsageStats(ctx context.Context, apiKey string, 
 // GetWalletUsageStatsExcludingSameSenderAndNonce gets both transaction count and total wei amount in a single query
 // Excludes records with the same sender and nonce combination
 func (u *UserOperation) GetWalletUsageStatsExcludingSameSenderAndNonce(ctx context.Context, apiKey string, policyID int64, sender string, nonce *big.Int, timeWindowHours int) (*WalletUsageStats, error) {
-	// Use a temporary struct to handle SQLite string time type
-	var tempResult struct {
-		Count          int64  `gorm:"column:count"`
-		TotalWeiAmount int64  `gorm:"column:total_wei_amount"`
-		EarliestTime   string `gorm:"column:earliest_transaction_time"`
-	}
-
 	apiKeyHash := crypto.Keccak256Hash([]byte(apiKey)).Hex()
 	timeThreshold := time.Now().UTC().Add(time.Duration(-timeWindowHours) * time.Hour)
 
 	nonceHash := crypto.Keccak256(nonce.Bytes())
 	hashedNonceUint := binary.BigEndian.Uint64(nonceHash[:8])
 	nonceBigInt := new(big.Int).SetUint64(hashedNonceUint % (1 << 63))
+
+	result := &WalletUsageStats{}
 
 	if err := u.db.WithContext(ctx).
 		Model(&UserOperation{}).
@@ -144,22 +117,11 @@ func (u *UserOperation) GetWalletUsageStatsExcludingSameSenderAndNonce(ctx conte
 		Where("sender = ?", sender).
 		Where("updated_at >= ?", timeThreshold).
 		Not("sender = ? AND nonce = ?", sender, nonceBigInt.Int64()). // exclude same sender and nonce
-		Scan(&tempResult).Error; err != nil {
+		Scan(&result).Error; err != nil {
 		return nil, err
 	}
 
-	result := &WalletUsageStats{
-		TransactionCount: tempResult.Count,
-		TotalWeiAmount:   tempResult.TotalWeiAmount,
-	}
-
-	if tempResult.EarliestTime != "" {
-		if parsedTime, err := time.Parse("2006-01-02 15:04:05.999999999-07:00", tempResult.EarliestTime); err == nil {
-			result.EarliestTransactionTime = &parsedTime
-		} else if parsedTime, err := time.Parse("2006-01-02 15:04:05", tempResult.EarliestTime); err == nil {
-			result.EarliestTransactionTime = &parsedTime
-		}
-	}
+	log.Debug("GetWalletUsageStats result", "count", result.TransactionCount, "total_wei_amount", result.TotalWeiAmount, "earliest_time", result.EarliestTransactionTime)
 
 	return result, nil
 }

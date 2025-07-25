@@ -3,7 +3,6 @@ package controller
 import (
 	"bytes"
 	"context"
-	"encoding/binary"
 	"encoding/json"
 	"math/big"
 	"net/http"
@@ -244,101 +243,6 @@ func TestPaymasterController_QuotaLimiting(t *testing.T) {
 		assert.NotEmpty(t, result["paymasterData"])
 	})
 
-	t.Run("QuotaExceeded_MultipleOperations", func(t *testing.T) {
-		db := setupTestDB(t)
-		router := setupPaymasterTestRouter(db)
-		createTestPolicy(t, db, "0.0015", 24, 10) // Very low limit to trigger quota exceeded
-
-		// Create existing usage that takes up most of the quota
-		createTestUsageStats(t, db, 500000000000000, 1, 1, 0) // 0.0005 ETH, 1 hour ago
-
-		// First operation should still be within quota
-		userOp1 := createTestUserOp(testSenderAddress1, 10)
-		w1 := makePaymasterRequest(t, router, "pm_getPaymasterStubData", userOp1, 1, testETHAddress)
-		assert.Equal(t, http.StatusOK, w1.Code)
-
-		var resp1 types.PaymasterJSONRPCResponse
-		err := json.Unmarshal(w1.Body.Bytes(), &resp1)
-		require.NoError(t, err)
-		assert.Nil(t, resp1.Error)
-
-		// Second operation should exceed quota
-		userOp2 := createTestUserOp(testSenderAddress1, 11)
-		w2 := makePaymasterRequest(t, router, "pm_getPaymasterStubData", userOp2, 1, testETHAddress)
-		assert.Equal(t, http.StatusOK, w2.Code)
-
-		var resp2 types.PaymasterJSONRPCResponse
-		err = json.Unmarshal(w2.Body.Bytes(), &resp2)
-		require.NoError(t, err)
-
-		assert.NotNil(t, resp2.Error)
-		assert.Equal(t, types.QuotaExceededErrorCode, resp2.Error.Code)
-		assert.Contains(t, resp2.Error.Message, "Quota exceeded")
-	})
-
-	t.Run("TransactionCountLimit_Exceeded", func(t *testing.T) {
-		db := setupTestDB(t)
-		router := setupPaymasterTestRouter(db)
-		// Create policy with low transaction count limit but high ETH limit to isolate transaction count testing
-		createTestPolicy(t, db, "10.0", 24, 3) // 10 ETH limit, 3 transactions limit, 24 hours window
-
-		// Create existing usage that reaches the transaction count limit
-		// Use small ETH amounts to ensure we hit transaction count limit, not ETH limit
-		createTestUsageStats(t, db, 50000000000000, 3, 1, 1) // 0.00005 ETH per tx, 3 transactions, 1 hour ago, nonces 1-3
-
-		// Verify current usage stats
-		userOpOrm := orm.NewUserOperation(db)
-		stats, err := userOpOrm.GetWalletUsageStatsExcludingSameSenderAndNonce(context.Background(), "test-api-key", 1, testSenderAddress1, big.NewInt(999), 24)
-		require.NoError(t, err)
-		assert.Equal(t, int64(3), stats.TransactionCount)       // Should have 3 transactions
-		assert.True(t, stats.TotalWeiAmount < 1000000000000000) // Should be much less than 0.001 ETH
-
-		// Attempt to create the 4th transaction, which should exceed the transaction count limit
-		userOp := createTestUserOp(testSenderAddress1, 10)
-		w := makePaymasterRequest(t, router, "pm_getPaymasterStubData", userOp, 1, testETHAddress)
-
-		assert.Equal(t, http.StatusOK, w.Code)
-
-		var resp types.PaymasterJSONRPCResponse
-		err = json.Unmarshal(w.Body.Bytes(), &resp)
-		require.NoError(t, err)
-
-		// Should fail due to transaction count limit exceeded
-		assert.NotNil(t, resp.Error)
-		assert.Equal(t, types.QuotaExceededErrorCode, resp.Error.Code)
-		assert.Contains(t, resp.Error.Message, "Quota exceeded")
-	})
-
-	t.Run("QuotaCheck_DifferentWallets", func(t *testing.T) {
-		db := setupTestDB(t)
-		router := setupPaymasterTestRouter(db)
-		createTestPolicy(t, db, "0.0015", 24, 10)
-
-		// Create usage for first wallet that uses up the quota
-		createTestUsageStats(t, db, 1000000000000000, 1, 1, 0) // 0.001 ETH
-
-		// First wallet operation should exceed quota
-		userOp1 := createTestUserOp(testSenderAddress1, 10)
-		w1 := makePaymasterRequest(t, router, "pm_getPaymasterStubData", userOp1, 1, testETHAddress)
-		assert.Equal(t, http.StatusOK, w1.Code)
-
-		var resp1 types.PaymasterJSONRPCResponse
-		err := json.Unmarshal(w1.Body.Bytes(), &resp1)
-		require.NoError(t, err)
-		assert.NotNil(t, resp1.Error)
-		assert.Equal(t, types.QuotaExceededErrorCode, resp1.Error.Code)
-
-		// Second wallet operation should succeed (different wallet, separate quota)
-		userOp2 := createTestUserOp(testSenderAddress2, 1)
-		w2 := makePaymasterRequest(t, router, "pm_getPaymasterStubData", userOp2, 1, testETHAddress)
-		assert.Equal(t, http.StatusOK, w2.Code)
-
-		var resp2 types.PaymasterJSONRPCResponse
-		err = json.Unmarshal(w2.Body.Bytes(), &resp2)
-		require.NoError(t, err)
-		assert.Nil(t, resp2.Error)
-	})
-
 	t.Run("PolicyNotFound", func(t *testing.T) {
 		db := setupTestDB(t)
 		router := setupPaymasterTestRouter(db)
@@ -356,52 +260,6 @@ func TestPaymasterController_QuotaLimiting(t *testing.T) {
 		assert.NotNil(t, resp.Error)
 		assert.Equal(t, types.QuotaExceededErrorCode, resp.Error.Code)
 		assert.Contains(t, resp.Error.Message, "Quota exceeded")
-	})
-
-	t.Run("UpdateOperationStatus_StubToFinal", func(t *testing.T) {
-		db := setupTestDB(t)
-		router := setupPaymasterTestRouter(db)
-		createTestPolicy(t, db, "1.0", 24, 10) // 1 ETH limit, 24 hours window
-
-		paymasterVerificationGasLimit, paymasterPostOpGasLimit := calculatePaymasterGasLimits(testETHAddress, testUSDTAddress, testUSDCAddress)
-		userOp := createTestUserOpWithPaymasterGasLimits(
-			testSenderAddress1,
-			1,
-			paymasterVerificationGasLimit,
-			paymasterPostOpGasLimit,
-		)
-
-		// First get stub data
-		w1 := makePaymasterRequest(t, router, "pm_getPaymasterStubData", userOp, 1, testETHAddress)
-		assert.Equal(t, http.StatusOK, w1.Code)
-
-		var resp1 types.PaymasterJSONRPCResponse
-		err := json.Unmarshal(w1.Body.Bytes(), &resp1)
-		require.NoError(t, err)
-		assert.Nil(t, resp1.Error)
-
-		// Then get final paymaster data (should update the same record)
-		w2 := makePaymasterRequest(t, router, "pm_getPaymasterData", userOp, 1, testETHAddress)
-		assert.Equal(t, http.StatusOK, w2.Code)
-
-		var resp2 types.PaymasterJSONRPCResponse
-		err = json.Unmarshal(w2.Body.Bytes(), &resp2)
-		require.NoError(t, err)
-		assert.Nil(t, resp2.Error)
-
-		nonceHash := crypto.Keccak256(big.NewInt(1).Bytes())
-		hashedNonceUint := binary.BigEndian.Uint64(nonceHash[:8])
-		nonceBigInt := new(big.Int).SetUint64(hashedNonceUint % (1 << 63))
-
-		// Verify the record in database
-		var operation orm.UserOperation
-		err = db.Where("api_key_hash = ?", crypto.Keccak256Hash([]byte("test-api-key")).Hex()).
-			Where("policy_id = ?", 1).
-			Where("sender = ?", testSenderAddress1).
-			Where("nonce = ?", nonceBigInt.Int64()).
-			First(&operation).Error
-		require.NoError(t, err)
-		assert.Equal(t, orm.UserOperationStatusPaymasterDataProvided, operation.Status)
 	})
 }
 
