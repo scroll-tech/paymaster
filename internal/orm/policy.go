@@ -11,8 +11,9 @@ import (
 
 // PolicyLimits represents the limits configuration for a policy
 type PolicyLimits struct {
-	MaxEthPerWalletPerWindow string `json:"max_eth_per_wallet_per_window"`
-	TimeWindowHours          int    `json:"time_window_hours"`
+	MaxEthPerWalletPerWindow          string `json:"max_eth_per_wallet_per_window"`
+	MaxTransactionsPerWalletPerWindow int64  `json:"max_transactions_per_wallet_per_window"`
+	TimeWindowHours                   int    `json:"time_window_hours"`
 }
 
 // Policy represents the data structure for sponsorship policy

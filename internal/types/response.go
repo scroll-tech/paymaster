@@ -54,32 +54,6 @@ const (
 	JSONRPCVersion = "2.0"
 )
 
-// Response the response schema
-type Response struct {
-	ErrCode int         `json:"errcode"`
-	ErrMsg  string      `json:"errmsg"`
-	Data    interface{} `json:"data"`
-}
-
-// RenderJSON renders response with json
-func RenderJSON(ctx *gin.Context, errCode int, err error, data interface{}) {
-	var errMsg string
-	if err != nil {
-		errMsg = err.Error()
-	}
-	renderData := Response{
-		ErrCode: errCode,
-		ErrMsg:  errMsg,
-		Data:    data,
-	}
-	ctx.JSON(http.StatusOK, renderData)
-}
-
-// RenderSuccess renders success response with json
-func RenderSuccess(ctx *gin.Context, data interface{}) {
-	RenderJSON(ctx, Success, nil, data)
-}
-
 // SendError sends a JSON-RPC error response
 func SendError(c *gin.Context, id interface{}, code int, message string) {
 	errResp := RPCError{Code: code, Message: message}
@@ -97,4 +71,19 @@ func SendSuccess(c *gin.Context, id interface{}, result interface{}) {
 		ID:      id,
 		Result:  result,
 	})
+}
+
+// SendRESTError sends a REST API error response
+func SendRESTError(c *gin.Context, code int, message string) {
+	c.JSON(http.StatusBadRequest, gin.H{
+		"error": gin.H{
+			"code":    code,
+			"message": message,
+		},
+	})
+}
+
+// SendRESTSuccess sends a REST API success response
+func SendRESTSuccess(c *gin.Context, result interface{}) {
+	c.JSON(http.StatusOK, result)
 }

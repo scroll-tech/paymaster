@@ -17,10 +17,10 @@ func NewProbesController() *ProbesController {
 
 // HealthCheck the api controller for health check
 func (a *ProbesController) HealthCheck(c *gin.Context) {
-	types.RenderSuccess(c, nil)
+	types.SendRESTSuccess(c, nil)
 }
 
 // Ready the api controller for ready check
 func (a *ProbesController) Ready(c *gin.Context) {
-	types.RenderSuccess(c, nil)
+	types.SendRESTSuccess(c, nil)
 }
