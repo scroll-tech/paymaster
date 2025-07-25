@@ -102,10 +102,17 @@ func (u *UserOperation) GetWalletUsageStats(ctx context.Context, apiKey string, 
 	}
 
 	if tempResult.EarliestTime != "" {
-		if parsedTime, err := time.Parse("2006-01-02 15:04:05.999999999-07:00", tempResult.EarliestTime); err == nil {
-			result.EarliestTransactionTime = &parsedTime
-		} else if parsedTime, err := time.Parse("2006-01-02 15:04:05", tempResult.EarliestTime); err == nil {
-			result.EarliestTransactionTime = &parsedTime
+		timeFormats := []string{
+			"2006-01-02 15:04:05.999999999-07:00",
+			"2006-01-02 15:04:05.000",
+			"2006-01-02 15:04:05",
+		}
+
+		for _, format := range timeFormats {
+			if parsedTime, err := time.Parse(format, tempResult.EarliestTime); err == nil {
+				result.EarliestTransactionTime = &parsedTime
+				break
+			}
 		}
 	}
 
