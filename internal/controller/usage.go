@@ -91,6 +91,8 @@ func (pc *PaymasterController) GetUsageStats(c *gin.Context, apiKey string, addr
 		}
 	}
 
+	log.Debug("Returning usage stats", "address", address, "policy_id", policyID, "usage", result, "usageStats", usageStats)
+
 	types.SendRESTSuccess(c, result)
 }
 
