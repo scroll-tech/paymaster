@@ -3,6 +3,7 @@ package controller
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"math/big"
 	"net/http"
@@ -388,12 +389,16 @@ func TestPaymasterController_QuotaLimiting(t *testing.T) {
 		require.NoError(t, err)
 		assert.Nil(t, resp2.Error)
 
+		nonceHash := crypto.Keccak256(big.NewInt(1).Bytes())
+		hashedNonceUint := binary.BigEndian.Uint64(nonceHash[:8])
+		nonceBigInt := new(big.Int).SetUint64(hashedNonceUint % (1 << 63))
+
 		// Verify the record in database
 		var operation orm.UserOperation
 		err = db.Where("api_key_hash = ?", crypto.Keccak256Hash([]byte("test-api-key")).Hex()).
 			Where("policy_id = ?", 1).
 			Where("sender = ?", testSenderAddress1).
-			Where("nonce = ?", 1).
+			Where("nonce = ?", nonceBigInt.Int64()).
 			First(&operation).Error
 		require.NoError(t, err)
 		assert.Equal(t, orm.UserOperationStatusPaymasterDataProvided, operation.Status)
