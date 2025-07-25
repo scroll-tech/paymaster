@@ -288,7 +288,7 @@ func TestPaymasterController_QuotaLimiting(t *testing.T) {
 
 		// Verify current usage stats
 		userOpOrm := orm.NewUserOperation(db)
-		stats, err := userOpOrm.GetWalletUsageStats(context.Background(), "test-api-key", 1, testSenderAddress1, 24)
+		stats, err := userOpOrm.GetWalletUsageStatsExcludingSameSenderAndNonce(context.Background(), "test-api-key", 1, testSenderAddress1, big.NewInt(999), 24)
 		require.NoError(t, err)
 		assert.Equal(t, int64(3), stats.TransactionCount)       // Should have 3 transactions
 		assert.True(t, stats.TotalWeiAmount < 1000000000000000) // Should be much less than 0.001 ETH
@@ -478,7 +478,7 @@ func TestPaymasterController_QuotaLimiting_EdgeCases(t *testing.T) {
 
 		// Verify that only transactions within time window are counted
 		userOpOrm := orm.NewUserOperation(db)
-		stats, err := userOpOrm.GetWalletUsageStats(context.Background(), "test-api-key", 1, testSenderAddress1, 24)
+		stats, err := userOpOrm.GetWalletUsageStatsExcludingSameSenderAndNonce(context.Background(), "test-api-key", 1, testSenderAddress1, big.NewInt(999), 24)
 		require.NoError(t, err)
 
 		// Should count 5 transactions (2+3) and total amount of 0.0003 ETH (0.0001+0.0002)

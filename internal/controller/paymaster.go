@@ -99,7 +99,7 @@ func (pc *PaymasterController) handleGetPaymasterStubData(c *gin.Context, req ty
 		estimatedWei := pc.calculateEstimatedWei(params, paymasterVerificationGasLimit, paymasterPostOpGasLimit)
 
 		// Check quota first
-		if err := pc.checkQuota(c.Request.Context(), apiKey, policyID, params.Sender, estimatedWei); err != nil {
+		if err := pc.checkQuota(c.Request.Context(), apiKey, policyID, params.Sender, (*big.Int)(&params.Nonce), estimatedWei); err != nil {
 			log.Error("Quota check failed", "error", err, "sender", params.Sender.Hex(), "nonce", params.Nonce.String(), "policy_id", policyID)
 			types.SendError(c, req.ID, types.QuotaExceededErrorCode, "Quota exceeded")
 			return
@@ -156,7 +156,7 @@ func (pc *PaymasterController) handleGetPaymasterData(c *gin.Context, req types.
 		finalWei := pc.calculateEstimatedWei(params, paymasterVerificationGasLimit, paymasterPostOpGasLimit)
 
 		// Check quota first
-		if err := pc.checkQuota(c.Request.Context(), apiKey, policyID, params.Sender, finalWei); err != nil {
+		if err := pc.checkQuota(c.Request.Context(), apiKey, policyID, params.Sender, (*big.Int)(&params.Nonce), finalWei); err != nil {
 			log.Error("Quota check failed", "error", err, "sender", params.Sender.Hex(), "nonce", params.Nonce.String(), "policy_id", policyID)
 			types.SendError(c, req.ID, types.QuotaExceededErrorCode, "Quota exceeded")
 			return
@@ -190,7 +190,7 @@ func (pc *PaymasterController) handleGetPaymasterData(c *gin.Context, req types.
 }
 
 // checkQuota verifies if the operation would exceed quota limits
-func (pc *PaymasterController) checkQuota(ctx context.Context, apiKey string, policyID int64, sender common.Address, weiAmount *big.Int) error {
+func (pc *PaymasterController) checkQuota(ctx context.Context, apiKey string, policyID int64, sender common.Address, nonce *big.Int, weiAmount *big.Int) error {
 	// Get policy to check limits
 	policy, err := pc.policyOrm.GetByAPIKeyAndPolicyID(ctx, apiKey, policyID)
 	if err != nil {
@@ -198,7 +198,7 @@ func (pc *PaymasterController) checkQuota(ctx context.Context, apiKey string, po
 	}
 
 	// Get current usage
-	usageStats, err := pc.userOperationOrm.GetWalletUsageStats(ctx, apiKey, policyID, sender.Hex(), policy.Limits.TimeWindowHours)
+	usageStats, err := pc.userOperationOrm.GetWalletUsageStatsExcludingSameSenderAndNonce(ctx, apiKey, policyID, sender.Hex(), nonce, policy.Limits.TimeWindowHours)
 	if err != nil {
 		return fmt.Errorf("failed to get wallet usage stats for policy %d and sender %s: %w", policyID, sender.Hex(), err)
 	}
@@ -240,7 +240,7 @@ func (pc *PaymasterController) checkQuota(ctx context.Context, apiKey string, po
 
 // createOrUpdateRecord creates or updates the operation record
 func (pc *PaymasterController) createOrUpdateRecord(ctx context.Context, apiKey string, policyID int64, sender common.Address, nonce *big.Int, weiAmount *big.Int, status orm.UserOperationStatus) error {
-	nonceHash := crypto.Keccak256(big.NewInt(1).Bytes())
+	nonceHash := crypto.Keccak256(nonce.Bytes())
 	hashedNonceUint := binary.BigEndian.Uint64(nonceHash[:8])
 	nonceBigInt := new(big.Int).SetUint64(hashedNonceUint % (1 << 63))
 

@@ -3,6 +3,8 @@ package orm
 
 import (
 	"context"
+	"encoding/binary"
+	"math/big"
 	"time"
 
 	"github.com/ethereum/go-ethereum/crypto"
@@ -90,6 +92,51 @@ func (u *UserOperation) GetWalletUsageStats(ctx context.Context, apiKey string, 
 		Where("policy_id = ?", policyID).
 		Where("sender = ?", sender).
 		Where("updated_at >= ?", timeThreshold).
+		Scan(&tempResult).Error; err != nil {
+		return nil, err
+	}
+
+	result := &WalletUsageStats{
+		TransactionCount: tempResult.Count,
+		TotalWeiAmount:   tempResult.TotalWeiAmount,
+	}
+
+	if tempResult.EarliestTime != "" {
+		if parsedTime, err := time.Parse("2006-01-02 15:04:05.999999999-07:00", tempResult.EarliestTime); err == nil {
+			result.EarliestTransactionTime = &parsedTime
+		} else if parsedTime, err := time.Parse("2006-01-02 15:04:05", tempResult.EarliestTime); err == nil {
+			result.EarliestTransactionTime = &parsedTime
+		}
+	}
+
+	return result, nil
+}
+
+// GetWalletUsageStatsExcludingSameSenderAndNonce gets both transaction count and total wei amount in a single query
+// Excludes records with the same sender and nonce combination
+func (u *UserOperation) GetWalletUsageStatsExcludingSameSenderAndNonce(ctx context.Context, apiKey string, policyID int64, sender string, nonce *big.Int, timeWindowHours int) (*WalletUsageStats, error) {
+	// Use a temporary struct to handle SQLite string time type
+	var tempResult struct {
+		Count          int64  `gorm:"column:count"`
+		TotalWeiAmount int64  `gorm:"column:total_wei_amount"`
+		EarliestTime   string `gorm:"column:earliest_transaction_time"`
+	}
+
+	apiKeyHash := crypto.Keccak256Hash([]byte(apiKey)).Hex()
+	timeThreshold := time.Now().UTC().Add(time.Duration(-timeWindowHours) * time.Hour)
+
+	nonceHash := crypto.Keccak256(nonce.Bytes())
+	hashedNonceUint := binary.BigEndian.Uint64(nonceHash[:8])
+	nonceBigInt := new(big.Int).SetUint64(hashedNonceUint % (1 << 63))
+
+	if err := u.db.WithContext(ctx).
+		Model(&UserOperation{}).
+		Select("COUNT(*) as count, COALESCE(SUM(wei_amount), 0) as total_wei_amount, MIN(updated_at) as earliest_transaction_time").
+		Where("api_key_hash = ?", apiKeyHash).
+		Where("policy_id = ?", policyID).
+		Where("sender = ?", sender).
+		Where("updated_at >= ?", timeThreshold).
+		Not("sender = ? AND nonce = ?", sender, nonceBigInt.Int64()). // exclude same sender and nonce
 		Scan(&tempResult).Error; err != nil {
 		return nil, err
 	}
