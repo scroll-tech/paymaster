@@ -790,7 +790,7 @@ func calculatePaymasterGasLimits(tokenAddr common.Address, usdtAddress common.Ad
 	if tokenAddr != emptyAddr {
 		if strings.EqualFold(tokenAddr.Hex(), usdtAddress.Hex()) || strings.EqualFold(tokenAddr.Hex(), usdcAddress.Hex()) {
 			paymasterPostOpGasLimit = big.NewInt(42000)
-			paymasterVerificationGasLimit = big.NewInt(35000)
+			paymasterVerificationGasLimit = big.NewInt(80000)
 		}
 	}
 
