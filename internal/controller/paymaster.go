@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/ecdsa"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -98,24 +99,17 @@ func (pc *PaymasterController) handleGetPaymasterStubData(c *gin.Context, req ty
 		estimatedWei := pc.calculateEstimatedWei(params, paymasterVerificationGasLimit, paymasterPostOpGasLimit)
 
 		// Check quota first
-		if err := pc.checkQuota(c.Request.Context(), apiKey, policyID, params.Sender, estimatedWei); err != nil {
+		if err := pc.checkQuota(c.Request.Context(), apiKey, policyID, params.Sender, (*big.Int)(&params.Nonce), estimatedWei); err != nil {
 			log.Error("Quota check failed", "error", err, "sender", params.Sender.Hex(), "nonce", params.Nonce.String(), "policy_id", policyID)
 			types.SendError(c, req.ID, types.QuotaExceededErrorCode, "Quota exceeded")
-			return
-		}
-
-		// Create or update record
-		if err := pc.createOrUpdateRecord(c.Request.Context(), apiKey, policyID, params.Sender, params.Nonce.ToInt(), estimatedWei, orm.UserOperationStatusPaymasterStubDataProvided); err != nil {
-			log.Error("Failed to create or update operation record", "error", err, "sender", params.Sender.Hex(), "nonce", params.Nonce.String(), "policy_id", policyID)
-			types.SendError(c, req.ID, types.InternalErrorCode, "Operation failed")
 			return
 		}
 	} else {
 		log.Debug("Token payment detected, skipping quota check and record creation", "token", tokenAddr.Hex(), "sender", params.Sender.Hex(), "nonce", params.Nonce.String())
 	}
 
-	// Generate signed paymaster data for stub
-	paymasterData, err := pc.buildAndSignPaymasterData(params, tokenAddr, paymasterVerificationGasLimit, paymasterPostOpGasLimit)
+	// Generate signed paymaster data for stub, using outdated data
+	paymasterData, err := pc.buildAndSignPaymasterData(params, tokenAddr, paymasterVerificationGasLimit, paymasterPostOpGasLimit, true /* outdated */)
 	if err != nil {
 		log.Error("Failed to build and sign paymaster data for stub", "error", err)
 		types.SendError(c, req.ID, types.PaymasterDataGenErrorCode, "Failed to generate paymaster data")
@@ -155,7 +149,7 @@ func (pc *PaymasterController) handleGetPaymasterData(c *gin.Context, req types.
 		finalWei := pc.calculateEstimatedWei(params, paymasterVerificationGasLimit, paymasterPostOpGasLimit)
 
 		// Check quota first
-		if err := pc.checkQuota(c.Request.Context(), apiKey, policyID, params.Sender, finalWei); err != nil {
+		if err := pc.checkQuota(c.Request.Context(), apiKey, policyID, params.Sender, (*big.Int)(&params.Nonce), finalWei); err != nil {
 			log.Error("Quota check failed", "error", err, "sender", params.Sender.Hex(), "nonce", params.Nonce.String(), "policy_id", policyID)
 			types.SendError(c, req.ID, types.QuotaExceededErrorCode, "Quota exceeded")
 			return
@@ -171,8 +165,8 @@ func (pc *PaymasterController) handleGetPaymasterData(c *gin.Context, req types.
 		log.Debug("Token payment detected, skipping quota check and record creation", "token", tokenAddr.Hex(), "sender", params.Sender.Hex(), "nonce", params.Nonce.String())
 	}
 
-	// Generate signed paymaster data
-	paymasterData, err := pc.buildAndSignPaymasterData(params, tokenAddr, paymasterVerificationGasLimit, paymasterPostOpGasLimit)
+	// Generate signed paymaster data, using non-outdated data
+	paymasterData, err := pc.buildAndSignPaymasterData(params, tokenAddr, paymasterVerificationGasLimit, paymasterPostOpGasLimit, false /* not outdated */)
 	if err != nil {
 		log.Error("Failed to build and sign paymaster data", "error", err)
 		types.SendError(c, req.ID, types.PaymasterDataGenErrorCode, "Failed to generate paymaster data")
@@ -189,7 +183,7 @@ func (pc *PaymasterController) handleGetPaymasterData(c *gin.Context, req types.
 }
 
 // checkQuota verifies if the operation would exceed quota limits
-func (pc *PaymasterController) checkQuota(ctx context.Context, apiKey string, policyID int64, sender common.Address, weiAmount *big.Int) error {
+func (pc *PaymasterController) checkQuota(ctx context.Context, apiKey string, policyID int64, sender common.Address, nonce *big.Int, weiAmount *big.Int) error {
 	// Get policy to check limits
 	policy, err := pc.policyOrm.GetByAPIKeyAndPolicyID(ctx, apiKey, policyID)
 	if err != nil {
@@ -197,9 +191,14 @@ func (pc *PaymasterController) checkQuota(ctx context.Context, apiKey string, po
 	}
 
 	// Get current usage
-	currentUsageWei, err := pc.userOperationOrm.GetWalletUsage(ctx, apiKey, policyID, sender.Hex(), policy.Limits.TimeWindowHours)
+	usageStats, err := pc.userOperationOrm.GetWalletUsageStatsExcludingSameSenderAndNonce(ctx, apiKey, policyID, sender.Hex(), nonce, policy.Limits.TimeWindowHours)
 	if err != nil {
-		return fmt.Errorf("failed to get current usage: %w", err)
+		return fmt.Errorf("failed to get wallet usage stats for policy %d and sender %s: %w", policyID, sender.Hex(), err)
+	}
+
+	if usageStats.TransactionCount >= policy.Limits.MaxTransactionsPerWalletPerWindow {
+		log.Debug("Transaction count quota exceeded", "sender", sender.Hex(), "current_count", usageStats.TransactionCount, "max_count", policy.Limits.MaxTransactionsPerWalletPerWindow)
+		return fmt.Errorf("transaction count quota exceeded: sender %s has %d transactions with time window %d hours, limit is %d transactions, policy_id: %d", sender.Hex(), usageStats.TransactionCount, policy.Limits.TimeWindowHours, policy.Limits.MaxTransactionsPerWalletPerWindow, policyID)
 	}
 
 	// Parse max limit from ETH to wei
@@ -216,17 +215,17 @@ func (pc *PaymasterController) checkQuota(ctx context.Context, apiKey string, po
 	}
 
 	// Check if new operation would exceed limit
-	currentUsage := big.NewInt(currentUsageWei)
+	currentUsage := big.NewInt(usageStats.TotalWeiAmount)
 	newTotal := new(big.Int).Add(currentUsage, weiAmount)
 
 	if newTotal.Cmp(maxLimitWei) > 0 {
-		log.Debug("Quota exceeded", "sender", sender.Hex(), "current_usage_wei", currentUsage.String(), "estimated_wei", weiAmount.String(), "new_total_wei", newTotal.String(), "max_limit_wei", maxLimitWei.String(), "max_limit_eth", policy.Limits.MaxEthPerWalletPerWindow)
+		log.Debug("ETH quota exceeded", "sender", sender.Hex(), "current_usage_wei", currentUsage.String(), "estimated_wei", weiAmount.String(), "new_total_wei", newTotal.String(), "max_limit_wei", maxLimitWei.String(), "max_limit_eth", policy.Limits.MaxEthPerWalletPerWindow)
 
 		// Convert back to ETH for user-friendly error message
 		currentUsageEth := new(big.Float).Quo(new(big.Float).SetInt(currentUsage), new(big.Float).SetInt(weiPerEth))
 		newTotalEth := new(big.Float).Quo(new(big.Float).SetInt(newTotal), new(big.Float).SetInt(weiPerEth))
 
-		return fmt.Errorf("quota exceeded: current usage %.6f ETH + new operation would total %.6f ETH, limit is %s ETH", currentUsageEth, newTotalEth, policy.Limits.MaxEthPerWalletPerWindow)
+		return fmt.Errorf("ETH quota exceeded: current usage %.6f ETH + new operation would total %.6f ETH, limit is %s ETH", currentUsageEth, newTotalEth, policy.Limits.MaxEthPerWalletPerWindow)
 	}
 
 	return nil
@@ -234,11 +233,15 @@ func (pc *PaymasterController) checkQuota(ctx context.Context, apiKey string, po
 
 // createOrUpdateRecord creates or updates the operation record
 func (pc *PaymasterController) createOrUpdateRecord(ctx context.Context, apiKey string, policyID int64, sender common.Address, nonce *big.Int, weiAmount *big.Int, status orm.UserOperationStatus) error {
+	nonceHash := crypto.Keccak256(nonce.Bytes())
+	hashedNonceUint := binary.BigEndian.Uint64(nonceHash[:8])
+	nonceBigInt := new(big.Int).SetUint64(hashedNonceUint % (1 << 63))
+
 	userOp := &orm.UserOperation{
 		APIKeyHash: crypto.Keccak256Hash([]byte(apiKey)).Hex(),
 		PolicyID:   policyID,
 		Sender:     sender.Hex(),
-		Nonce:      nonce.Int64(),
+		Nonce:      nonceBigInt.Int64(),
 		WeiAmount:  weiAmount.Int64(),
 		Status:     status,
 	}
@@ -525,13 +528,18 @@ func (pc *PaymasterController) getChainlinkETHPrice(aggregatorAddress string) (*
 }
 
 // buildAndSignPaymasterData builds and signs paymaster data
-func (pc *PaymasterController) buildAndSignPaymasterData(userOp *types.PaymasterUserOperationV7, tokenAddr common.Address, paymasterVerificationGasLimit, paymasterPostOpGasLimit *big.Int) (string, error) {
+func (pc *PaymasterController) buildAndSignPaymasterData(userOp *types.PaymasterUserOperationV7, tokenAddr common.Address, paymasterVerificationGasLimit, paymasterPostOpGasLimit *big.Int, outdated bool) (string, error) {
 	// Current timestamp in seconds
 	currentTime := time.Now().Unix()
 
 	// Set validity window
 	validUntil := big.NewInt(currentTime + 3600) // current time + 1 hour
 	validAfter := big.NewInt(currentTime - 3600) // current time - 1 hour
+	if outdated {
+		log.Debug("Using outdated paymaster data, this is for giving stub data only")
+		validUntil = big.NewInt(currentTime - 7200)  // current time - 2 hours
+		validAfter = big.NewInt(currentTime - 10800) // current time - 3 hours
+	}
 
 	// Sponsor UUID, default to zero
 	sponsorUUID := big.NewInt(0)
@@ -539,7 +547,7 @@ func (pc *PaymasterController) buildAndSignPaymasterData(userOp *types.Paymaster
 	// Configuration flags
 	allowAnyBundler := true
 	precheckBalance := true
-	prepaymentRequired := true
+	prepaymentRequired := false
 
 	// Set default values for ETH
 	exchangeRate := big.NewInt(0) // Zero for ETH
