@@ -546,7 +546,7 @@ func (pc *PaymasterController) buildAndSignPaymasterData(userOp *types.Paymaster
 
 	// Configuration flags
 	allowAnyBundler := true
-	precheckBalance := true
+	precheckBalance := false
 	prepaymentRequired := true
 
 	// Set default values for ETH
