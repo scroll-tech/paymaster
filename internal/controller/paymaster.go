@@ -546,8 +546,8 @@ func (pc *PaymasterController) buildAndSignPaymasterData(userOp *types.Paymaster
 
 	// Configuration flags
 	allowAnyBundler := true
-	precheckBalance := false
-	prepaymentRequired := true
+	precheckBalance := true
+	prepaymentRequired := false
 
 	// Set default values for ETH
 	exchangeRate := big.NewInt(0) // Zero for ETH
@@ -790,7 +790,7 @@ func calculatePaymasterGasLimits(tokenAddr common.Address, usdtAddress common.Ad
 	if tokenAddr != emptyAddr {
 		if strings.EqualFold(tokenAddr.Hex(), usdtAddress.Hex()) || strings.EqualFold(tokenAddr.Hex(), usdcAddress.Hex()) {
 			paymasterPostOpGasLimit = big.NewInt(42000)
-			paymasterVerificationGasLimit = big.NewInt(80000)
+			paymasterVerificationGasLimit = big.NewInt(35000)
 		}
 	}
 
