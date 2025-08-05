@@ -55,6 +55,7 @@ type GetPaymasterStubDataResultV7 struct {
 	PaymasterData                 string         `json:"paymasterData"`
 	PaymasterVerificationGasLimit string         `json:"paymasterVerificationGasLimit,omitempty"` // Optional for v0.7
 	PaymasterPostOpGasLimit       string         `json:"paymasterPostOpGasLimit"`                 // Required for v0.7, because paymaster cannot trust the wallet side to provide it
+	IsFinal                       bool           `json:"isFinal,omitempty"`
 }
 
 // GetPaymasterDataResultV7 is the result for pm_getPaymasterData (EntryPoint v0.7).

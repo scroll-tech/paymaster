@@ -86,7 +86,7 @@ func (pc *PaymasterController) handlePaymasterMethod(c *gin.Context, req types.P
 
 // handleGetPaymasterStubData implements the logic for pm_getPaymasterStubData.
 func (pc *PaymasterController) handleGetPaymasterStubData(c *gin.Context, req types.PaymasterJSONRPCRequest, apiKey string) {
-	params, tokenAddr, policyID, rpcErr := pc.parseERC7677Params(req.Params)
+	params, tokenAddr, policyID, forceIsFinalEstimateOnly, rpcErr := pc.parseERC7677Params(req.Params)
 	if rpcErr != nil {
 		types.SendError(c, req.ID, rpcErr.Code, rpcErr.Message)
 		return
@@ -123,13 +123,17 @@ func (pc *PaymasterController) handleGetPaymasterStubData(c *gin.Context, req ty
 		PaymasterVerificationGasLimit: hexutil.EncodeBig(paymasterVerificationGasLimit),
 	}
 
+	if forceIsFinalEstimateOnly {
+		stubResult.IsFinal = true
+	}
+
 	log.Debug("Return stub data", "result", stubResult)
 	types.SendSuccess(c, req.ID, stubResult)
 }
 
 // handleGetPaymasterData implements the logic for pm_getPaymasterData.
 func (pc *PaymasterController) handleGetPaymasterData(c *gin.Context, req types.PaymasterJSONRPCRequest, apiKey string) {
-	params, tokenAddr, policyID, rpcErr := pc.parseERC7677Params(req.Params)
+	params, tokenAddr, policyID, _, rpcErr := pc.parseERC7677Params(req.Params)
 	if rpcErr != nil {
 		types.SendError(c, req.ID, rpcErr.Code, rpcErr.Message)
 		return
@@ -276,62 +280,63 @@ func (pc *PaymasterController) calculateEstimatedWei(userOp *types.PaymasterUser
 	return new(big.Int).Mul(totalGas, maxFeePerGas)
 }
 
-func (pc *PaymasterController) parseERC7677Params(rawParams json.RawMessage) (*types.PaymasterUserOperationV7, common.Address, int64, *types.RPCError) {
+func (pc *PaymasterController) parseERC7677Params(rawParams json.RawMessage) (*types.PaymasterUserOperationV7, common.Address, int64, bool, *types.RPCError) {
 	var p []json.RawMessage
 	if err := json.Unmarshal(rawParams, &p); err != nil || len(p) != 4 { // Need exactly 4 elements for ERC-7677
 		log.Debug("Invalid params structure", "params", string(rawParams), "error", err, "length", len(p))
-		return nil, common.Address{}, 0, &types.RPCError{Code: types.InvalidParamsCode, Message: "Invalid params structure: expected an array of exactly 4 elements including context"}
+		return nil, common.Address{}, 0, false, &types.RPCError{Code: types.InvalidParamsCode, Message: "Invalid params structure: expected an array of exactly 4 elements including context"}
 	}
 
 	var userOp *types.PaymasterUserOperationV7
 	if err := json.Unmarshal(p[0], &userOp); err != nil {
 		log.Debug("Invalid userOp param", "userOp", string(p[0]), "error", err)
-		return nil, common.Address{}, 0, &types.RPCError{Code: types.InvalidParamsCode, Message: "Invalid userOp param"}
+		return nil, common.Address{}, 0, false, &types.RPCError{Code: types.InvalidParamsCode, Message: "Invalid userOp param"}
 	}
 
 	var entryPoint string
 	if err := json.Unmarshal(p[1], &entryPoint); err != nil {
 		log.Debug("Invalid entryPoint param", "entryPoint", entryPoint, "error", err)
-		return nil, common.Address{}, 0, &types.RPCError{Code: types.InvalidParamsCode, Message: "Invalid entryPoint param"}
+		return nil, common.Address{}, 0, false, &types.RPCError{Code: types.InvalidParamsCode, Message: "Invalid entryPoint param"}
 	}
 
 	if !strings.EqualFold(entryPoint, entryPointV7Address) {
 		log.Debug("Unsupported EntryPoint version", "entryPoint", entryPoint, "expected", entryPointV7Address)
-		return nil, common.Address{}, 0, &types.RPCError{Code: types.UnsupportedEntryPointCode, Message: "Unsupported EntryPoint version. Only v0.7 is supported (" + entryPointV7Address + ")."}
+		return nil, common.Address{}, 0, false, &types.RPCError{Code: types.UnsupportedEntryPointCode, Message: "Unsupported EntryPoint version. Only v0.7 is supported (" + entryPointV7Address + ")."}
 	}
 
 	var chainIDStr string
 	if err := json.Unmarshal(p[2], &chainIDStr); err != nil {
 		log.Debug("Invalid chainId param", "chainId", string(p[2]), "error", err)
-		return nil, common.Address{}, 0, &types.RPCError{Code: types.InvalidParamsCode, Message: "Invalid chainId param"}
+		return nil, common.Address{}, 0, false, &types.RPCError{Code: types.InvalidParamsCode, Message: "Invalid chainId param"}
 	}
 
 	inputChainID, success := new(big.Int).SetString(strings.TrimPrefix(chainIDStr, "0x"), 16)
 	if !success {
 		log.Debug("Failed to parse chainId", "chainId", chainIDStr)
-		return nil, common.Address{}, 0, &types.RPCError{Code: types.InvalidParamsCode, Message: "Invalid chainId format"}
+		return nil, common.Address{}, 0, false, &types.RPCError{Code: types.InvalidParamsCode, Message: "Invalid chainId format"}
 	}
 
 	if inputChainID.Cmp(big.NewInt(pc.cfg.ChainID)) != 0 {
 		log.Debug("Unsupported chainId", "chainId", inputChainID.String(), "expected", pc.cfg.ChainID)
-		return nil, common.Address{}, 0, &types.RPCError{Code: types.UnsupportedChainIDCode, Message: "Unsupported chainId. Only " + fmt.Sprint(pc.cfg.ChainID) + " is supported."}
+		return nil, common.Address{}, 0, false, &types.RPCError{Code: types.UnsupportedChainIDCode, Message: "Unsupported chainId. Only " + fmt.Sprint(pc.cfg.ChainID) + " is supported."}
 	}
 
 	type ERC7677Context struct {
-		Token    string `json:"token"`
-		PolicyID *int64 `json:"policy_id"`
+		Token                    string `json:"token"`
+		PolicyID                 *int64 `json:"policy_id"`
+		ForceIsFinalEstimateOnly bool   `json:"forceIsFinalEstimateOnly,omitempty"`
 	}
 
 	var context *ERC7677Context
 	if err := json.Unmarshal(p[3], &context); err != nil {
 		log.Debug("Invalid context param", "context", string(p[3]), "error", err)
-		return nil, common.Address{}, 0, &types.RPCError{Code: types.InvalidParamsCode, Message: "Invalid context param"}
+		return nil, common.Address{}, 0, false, &types.RPCError{Code: types.InvalidParamsCode, Message: "Invalid context param"}
 	}
 
 	// Validate required context fields
 	if context == nil {
 		log.Debug("Missing context")
-		return nil, common.Address{}, 0, &types.RPCError{Code: types.InvalidParamsCode, Message: "Context is required"}
+		return nil, common.Address{}, 0, false, &types.RPCError{Code: types.InvalidParamsCode, Message: "Context is required"}
 	}
 
 	// Handle token address
@@ -340,7 +345,7 @@ func (pc *PaymasterController) parseERC7677Params(rawParams json.RawMessage) (*t
 		tokenAddr = common.HexToAddress(context.Token)
 		if tokenAddr != emptyAddr && !pc.isSupportedToken(tokenAddr) {
 			log.Debug("Unsupported token", "provided", tokenAddr.Hex(), "supported", pc.getSupportedTokensString())
-			return nil, common.Address{}, 0, &types.RPCError{
+			return nil, common.Address{}, 0, false, &types.RPCError{
 				Code:    types.UnsupportedTokenErrorCode,
 				Message: "Unsupported token. Supported tokens: " + pc.getSupportedTokensString(),
 			}
@@ -353,12 +358,12 @@ func (pc *PaymasterController) parseERC7677Params(rawParams json.RawMessage) (*t
 		// ETH payment requires policy_id
 		if context.PolicyID == nil {
 			log.Debug("Missing policy_id in context for ETH payment")
-			return nil, common.Address{}, 0, &types.RPCError{Code: types.InvalidParamsCode, Message: "policy_id is required in context for ETH payments"}
+			return nil, common.Address{}, 0, false, &types.RPCError{Code: types.InvalidParamsCode, Message: "policy_id is required in context for ETH payments"}
 		}
 
 		if *context.PolicyID < 0 {
 			log.Debug("Invalid policy_id", "policy_id", *context.PolicyID)
-			return nil, common.Address{}, 0, &types.RPCError{Code: types.InvalidParamsCode, Message: "Invalid policy_id. It must be a non-negative integer."}
+			return nil, common.Address{}, 0, false, &types.RPCError{Code: types.InvalidParamsCode, Message: "Invalid policy_id. It must be a non-negative integer."}
 		}
 
 		policyID = *context.PolicyID
@@ -367,14 +372,14 @@ func (pc *PaymasterController) parseERC7677Params(rawParams json.RawMessage) (*t
 		if context.PolicyID != nil {
 			if *context.PolicyID < 0 {
 				log.Debug("Invalid policy_id", "policy_id", *context.PolicyID)
-				return nil, common.Address{}, 0, &types.RPCError{Code: types.InvalidParamsCode, Message: "Invalid policy_id. It must be a non-negative integer."}
+				return nil, common.Address{}, 0, false, &types.RPCError{Code: types.InvalidParamsCode, Message: "Invalid policy_id. It must be a non-negative integer."}
 			}
 			policyID = *context.PolicyID
 		}
 		log.Debug("Token payment detected, policy_id not required", "token", tokenAddr.Hex(), "policy_id", policyID, "sender", userOp.Sender.Hex(), "nonce", userOp.Nonce.String())
 	}
 
-	return userOp, tokenAddr, policyID, nil
+	return userOp, tokenAddr, policyID, context.ForceIsFinalEstimateOnly, nil
 }
 
 // getTokenExchangeRate returns the exchange rate for the specified token
