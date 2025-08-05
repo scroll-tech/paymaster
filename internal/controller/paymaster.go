@@ -86,7 +86,7 @@ func (pc *PaymasterController) handlePaymasterMethod(c *gin.Context, req types.P
 
 // handleGetPaymasterStubData implements the logic for pm_getPaymasterStubData.
 func (pc *PaymasterController) handleGetPaymasterStubData(c *gin.Context, req types.PaymasterJSONRPCRequest, apiKey string) {
-	params, tokenAddr, policyID, forceIsFinalEstimateOnly, rpcErr := pc.parseERC7677Params(req.Params)
+	params, tokenAddr, policyID, forceIsFinalForEstimate, rpcErr := pc.parseERC7677Params(req.Params)
 	if rpcErr != nil {
 		types.SendError(c, req.ID, rpcErr.Code, rpcErr.Message)
 		return
@@ -123,7 +123,7 @@ func (pc *PaymasterController) handleGetPaymasterStubData(c *gin.Context, req ty
 		PaymasterVerificationGasLimit: hexutil.EncodeBig(paymasterVerificationGasLimit),
 	}
 
-	if forceIsFinalEstimateOnly {
+	if forceIsFinalForEstimate {
 		stubResult.IsFinal = true
 	}
 
@@ -322,9 +322,9 @@ func (pc *PaymasterController) parseERC7677Params(rawParams json.RawMessage) (*t
 	}
 
 	type ERC7677Context struct {
-		Token                    string `json:"token"`
-		PolicyID                 *int64 `json:"policy_id"`
-		ForceIsFinalEstimateOnly bool   `json:"force_is_final_estimate_only"`
+		Token                   string `json:"token"`
+		PolicyID                *int64 `json:"policy_id"`
+		ForceIsFinalForEstimate bool   `json:"force_is_final_for_estimate"`
 	}
 
 	var context *ERC7677Context
@@ -379,7 +379,7 @@ func (pc *PaymasterController) parseERC7677Params(rawParams json.RawMessage) (*t
 		log.Debug("Token payment detected, policy_id not required", "token", tokenAddr.Hex(), "policy_id", policyID, "sender", userOp.Sender.Hex(), "nonce", userOp.Nonce.String())
 	}
 
-	return userOp, tokenAddr, policyID, context.ForceIsFinalEstimateOnly, nil
+	return userOp, tokenAddr, policyID, context.ForceIsFinalForEstimate, nil
 }
 
 // getTokenExchangeRate returns the exchange rate for the specified token
