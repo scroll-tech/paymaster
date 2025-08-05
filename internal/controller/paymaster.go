@@ -324,7 +324,7 @@ func (pc *PaymasterController) parseERC7677Params(rawParams json.RawMessage) (*t
 	type ERC7677Context struct {
 		Token                    string `json:"token"`
 		PolicyID                 *int64 `json:"policy_id"`
-		ForceIsFinalEstimateOnly bool   `json:"forceIsFinalEstimateOnly"`
+		ForceIsFinalEstimateOnly bool   `json:"force_is_final_estimate_only"`
 	}
 
 	var context *ERC7677Context
