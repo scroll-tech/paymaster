@@ -788,14 +788,14 @@ func packGasLimits(high, low *big.Int) [32]byte {
 // The token address is either the zero address for ETH or the USDT address, validated before calling this function.
 func calculatePaymasterGasLimits(tokenAddr common.Address, usdtAddress common.Address, usdcAddress common.Address) (*big.Int, *big.Int) {
 	// Set default values for ETH
-	paymasterPostOpGasLimit := big.NewInt(5000)
-	paymasterVerificationGasLimit := big.NewInt(25000)
+	paymasterPostOpGasLimit := big.NewInt(10000)
+	paymasterVerificationGasLimit := big.NewInt(50000)
 
 	// If using USDT token
 	if tokenAddr != emptyAddr {
 		if strings.EqualFold(tokenAddr.Hex(), usdtAddress.Hex()) || strings.EqualFold(tokenAddr.Hex(), usdcAddress.Hex()) {
-			paymasterPostOpGasLimit = big.NewInt(42000)
-			paymasterVerificationGasLimit = big.NewInt(35000)
+			paymasterPostOpGasLimit = big.NewInt(50000)
+			paymasterVerificationGasLimit = big.NewInt(60000)
 		}
 	}
 
