@@ -269,9 +269,9 @@ func TestPaymasterController_QuotaLimiting_EdgeCases(t *testing.T) {
 		router := setupPaymasterTestRouter(db)
 
 		// Calculate expected gas cost for the test userOp
-		// verificationGas (100000) + callGas (200000) + preVerificationGas (50000) + paymasterVerificationGas (25000) + paymasterPostOpGas (5000) = 380000
-		// 380000 * 2 gwei = 760,000,000,000,000 wei = 0.00076 ETH
-		createTestPolicy(t, db, "0.00076", 24, 10) // Exact limit
+		// verificationGas (100000) + callGas (200000) + preVerificationGas (50000) + paymasterVerificationGas (50000) + paymasterPostOpGas (10000) = 410000
+		// 410000 * 2 gwei = 820,000,000,000,000 wei = 0.00082 ETH
+		createTestPolicy(t, db, "0.00082", 24, 10) // Exact limit
 
 		userOp := createTestUserOp(testSenderAddress1, 1)
 		w := makePaymasterRequest(t, router, "pm_getPaymasterStubData", userOp, 1, testETHAddress)
