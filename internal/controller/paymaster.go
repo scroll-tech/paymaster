@@ -108,8 +108,8 @@ func (pc *PaymasterController) handleGetPaymasterStubData(c *gin.Context, req ty
 		log.Debug("Token payment detected, skipping quota check and record creation", "token", tokenAddr.Hex(), "sender", params.Sender.Hex(), "nonce", params.Nonce.String())
 	}
 
-	// Generate signed paymaster data for stub, using outdated data
-	paymasterData, err := pc.buildAndSignPaymasterData(params, tokenAddr, paymasterVerificationGasLimit, paymasterPostOpGasLimit, true /* outdated */)
+	// Generate signed paymaster data for stub, using fixed placeholder signature
+	paymasterData, err := pc.buildAndSignPaymasterData(params, tokenAddr, paymasterVerificationGasLimit, paymasterPostOpGasLimit, true /* useStubSig */)
 	if err != nil {
 		log.Error("Failed to build and sign paymaster data for stub", "error", err)
 		types.SendError(c, req.ID, types.PaymasterDataGenErrorCode, "Failed to generate paymaster data")
@@ -169,8 +169,8 @@ func (pc *PaymasterController) handleGetPaymasterData(c *gin.Context, req types.
 		log.Debug("Token payment detected, skipping quota check and record creation", "token", tokenAddr.Hex(), "sender", params.Sender.Hex(), "nonce", params.Nonce.String())
 	}
 
-	// Generate signed paymaster data, using non-outdated data
-	paymasterData, err := pc.buildAndSignPaymasterData(params, tokenAddr, paymasterVerificationGasLimit, paymasterPostOpGasLimit, false /* not outdated */)
+	// Generate signed paymaster data, using real signature
+	paymasterData, err := pc.buildAndSignPaymasterData(params, tokenAddr, paymasterVerificationGasLimit, paymasterPostOpGasLimit, false /* not useStubSig */)
 	if err != nil {
 		log.Error("Failed to build and sign paymaster data", "error", err)
 		types.SendError(c, req.ID, types.PaymasterDataGenErrorCode, "Failed to generate paymaster data")
@@ -533,18 +533,13 @@ func (pc *PaymasterController) getChainlinkETHPrice(aggregatorAddress string) (*
 }
 
 // buildAndSignPaymasterData builds and signs paymaster data
-func (pc *PaymasterController) buildAndSignPaymasterData(userOp *types.PaymasterUserOperationV7, tokenAddr common.Address, paymasterVerificationGasLimit, paymasterPostOpGasLimit *big.Int, outdated bool) (string, error) {
+func (pc *PaymasterController) buildAndSignPaymasterData(userOp *types.PaymasterUserOperationV7, tokenAddr common.Address, paymasterVerificationGasLimit, paymasterPostOpGasLimit *big.Int, useStubSig bool) (string, error) {
 	// Current timestamp in seconds
 	currentTime := time.Now().Unix()
 
 	// Set validity window
 	validUntil := big.NewInt(currentTime + 3600) // current time + 1 hour
 	validAfter := big.NewInt(currentTime - 3600) // current time - 1 hour
-	if outdated {
-		log.Debug("Using outdated paymaster data, this is for giving stub data only")
-		validUntil = big.NewInt(currentTime - 7200)  // current time - 2 hours
-		validAfter = big.NewInt(currentTime - 10800) // current time - 3 hours
-	}
 
 	// Sponsor UUID, default to zero
 	sponsorUUID := big.NewInt(0)
@@ -580,26 +575,45 @@ func (pc *PaymasterController) buildAndSignPaymasterData(userOp *types.Paymaster
 		paymasterPostOpGasLimit,
 	)
 
-	// Hash user operation with paymaster data
-	hash := pc.getPaymasterDataHash(
-		userOp,
-		validUntil,
-		validAfter,
-		sponsorUUID,
-		allowAnyBundler,
-		precheckBalance,
-		prepaymentRequired,
-		tokenAddr,
-		pc.cfg.PaymasterAddressV7,
-		exchangeRate,
-		paymasterPostOpGasLimit,
-		paymasterVerificationGasLimit,
-		paymasterPostOpGasLimit)
+	var signature []byte
+	if useStubSig {
+		// Use a dummy but valid signature
+		const stubSigHex = "23359dd4c22d55ddf471f5b9c9cdced955e94f2848a2390cc5822d65ebf949e4546ecbbb5edc4ae388d9c5d62dcaf2a0f2e1ecdb56f26f0cb04b8458845b80201b"
+		var err error
+		signature, err = hex.DecodeString(stubSigHex)
+		if err != nil {
+			return "", fmt.Errorf("invalid stub signature hex: %w", err)
+		}
+		if len(signature) != 65 {
+			return "", fmt.Errorf("stub signature must be 65 bytes, got %d", len(signature))
+		}
+	} else {
+		hash := pc.getPaymasterDataHash(
+			userOp,
+			validUntil,
+			validAfter,
+			sponsorUUID,
+			allowAnyBundler,
+			precheckBalance,
+			prepaymentRequired,
+			tokenAddr,
+			pc.cfg.PaymasterAddressV7,
+			exchangeRate,
+			paymasterPostOpGasLimit,
+			paymasterVerificationGasLimit,
+			paymasterPostOpGasLimit,
+		)
 
-	// Sign the hash
-	signature, err := pc.signHash(hash)
-	if err != nil {
-		return "", fmt.Errorf("failed to sign paymaster data hash, userOp: %v, paymasterData: %s, hash: %s, error: %w", userOp, hex.EncodeToString(paymasterData), hex.EncodeToString(hash), err)
+		var err error
+		signature, err = pc.signHash(hash)
+		if err != nil {
+			return "", fmt.Errorf("failed to sign paymaster data hash, userOp: %v, paymasterData: %s, hash: %s, error: %w",
+				userOp,
+				hex.EncodeToString(paymasterData),
+				hex.EncodeToString(hash),
+				err,
+			)
+		}
 	}
 
 	// Append signature to paymaster data
