@@ -853,12 +853,7 @@ func (pc *PaymasterController) buildAndSignPaymasterData(userOp *types.Paymaster
 		var err error
 		signature, err = pc.signHash(hash)
 		if err != nil {
-			return "", fmt.Errorf("failed to sign paymaster data hash, userOp: %v, paymasterData: %s, hash: %s, error: %w",
-				userOp,
-				hex.EncodeToString(paymasterData),
-				hex.EncodeToString(hash),
-				err,
-			)
+			return "", fmt.Errorf("failed to sign paymaster data hash, userOp: %v, paymasterData: %s, hash: %s, error: %w", userOp, hex.EncodeToString(paymasterData), hex.EncodeToString(hash), err)
 		}
 	}
 
