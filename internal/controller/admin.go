@@ -313,6 +313,15 @@ func (ac *AdminController) validatePolicyLimits(limits *orm.PolicyLimits) error 
 		return fmt.Errorf("limits cannot be nil")
 	}
 
+	// Validate MaxTransactionsPerWalletPerWindow (required)
+	if limits.MaxTransactionsPerWalletPerWindow <= 0 {
+		return fmt.Errorf("max_transactions_per_wallet_per_window must be positive")
+	}
+
+	if limits.MaxTransactionsPerWalletPerWindow > 1000000 {
+		return fmt.Errorf("max_transactions_per_wallet_per_window cannot exceed 1000000")
+	}
+
 	// Validate MaxEthPerWalletPerWindow (required)
 	if limits.MaxEthPerWalletPerWindow == "" {
 		return fmt.Errorf("max_eth_per_wallet_per_window is required")

@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/ecdsa"
 	"encoding/asn1"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -331,7 +332,7 @@ func (pc *PaymasterController) handlePaymasterMethod(c *gin.Context, req types.P
 
 // handleGetPaymasterStubData implements the logic for pm_getPaymasterStubData.
 func (pc *PaymasterController) handleGetPaymasterStubData(c *gin.Context, req types.PaymasterJSONRPCRequest, apiKey string) {
-	params, tokenAddr, policyID, rpcErr := pc.parseERC7677Params(req.Params)
+	params, tokenAddr, policyID, forceIsFinalForEstimate, rpcErr := pc.parseERC7677Params(req.Params)
 	if rpcErr != nil {
 		types.SendError(c, req.ID, rpcErr.Code, rpcErr.Message)
 		return
@@ -344,24 +345,17 @@ func (pc *PaymasterController) handleGetPaymasterStubData(c *gin.Context, req ty
 		estimatedWei := pc.calculateEstimatedWei(params, paymasterVerificationGasLimit, paymasterPostOpGasLimit)
 
 		// Check quota first
-		if err := pc.checkQuota(c.Request.Context(), apiKey, policyID, params.Sender, estimatedWei); err != nil {
+		if err := pc.checkQuota(c.Request.Context(), apiKey, policyID, params.Sender, (*big.Int)(&params.Nonce), estimatedWei); err != nil {
 			log.Error("Quota check failed", "error", err, "sender", params.Sender.Hex(), "nonce", params.Nonce.String(), "policy_id", policyID)
 			types.SendError(c, req.ID, types.QuotaExceededErrorCode, "Quota exceeded")
-			return
-		}
-
-		// Create or update record
-		if err := pc.createOrUpdateRecord(c.Request.Context(), apiKey, policyID, params.Sender, params.Nonce.ToInt(), estimatedWei, orm.UserOperationStatusPaymasterStubDataProvided); err != nil {
-			log.Error("Failed to create or update operation record", "error", err, "sender", params.Sender.Hex(), "nonce", params.Nonce.String(), "policy_id", policyID)
-			types.SendError(c, req.ID, types.InternalErrorCode, "Operation failed")
 			return
 		}
 	} else {
 		log.Debug("Token payment detected, skipping quota check and record creation", "token", tokenAddr.Hex(), "sender", params.Sender.Hex(), "nonce", params.Nonce.String())
 	}
 
-	// Generate signed paymaster data for stub
-	paymasterData, err := pc.buildAndSignPaymasterData(params, tokenAddr, paymasterVerificationGasLimit, paymasterPostOpGasLimit)
+	// Generate signed paymaster data for stub, using fixed placeholder signature
+	paymasterData, err := pc.buildAndSignPaymasterData(params, tokenAddr, paymasterVerificationGasLimit, paymasterPostOpGasLimit, true /* useStubSig */)
 	if err != nil {
 		log.Error("Failed to build and sign paymaster data for stub", "error", err)
 		types.SendError(c, req.ID, types.PaymasterDataGenErrorCode, "Failed to generate paymaster data")
@@ -375,13 +369,17 @@ func (pc *PaymasterController) handleGetPaymasterStubData(c *gin.Context, req ty
 		PaymasterVerificationGasLimit: hexutil.EncodeBig(paymasterVerificationGasLimit),
 	}
 
+	if forceIsFinalForEstimate {
+		stubResult.IsFinal = true
+	}
+
 	log.Debug("Return stub data", "result", stubResult)
 	types.SendSuccess(c, req.ID, stubResult)
 }
 
 // handleGetPaymasterData implements the logic for pm_getPaymasterData.
 func (pc *PaymasterController) handleGetPaymasterData(c *gin.Context, req types.PaymasterJSONRPCRequest, apiKey string) {
-	params, tokenAddr, policyID, rpcErr := pc.parseERC7677Params(req.Params)
+	params, tokenAddr, policyID, _, rpcErr := pc.parseERC7677Params(req.Params)
 	if rpcErr != nil {
 		types.SendError(c, req.ID, rpcErr.Code, rpcErr.Message)
 		return
@@ -401,7 +399,7 @@ func (pc *PaymasterController) handleGetPaymasterData(c *gin.Context, req types.
 		finalWei := pc.calculateEstimatedWei(params, paymasterVerificationGasLimit, paymasterPostOpGasLimit)
 
 		// Check quota first
-		if err := pc.checkQuota(c.Request.Context(), apiKey, policyID, params.Sender, finalWei); err != nil {
+		if err := pc.checkQuota(c.Request.Context(), apiKey, policyID, params.Sender, (*big.Int)(&params.Nonce), finalWei); err != nil {
 			log.Error("Quota check failed", "error", err, "sender", params.Sender.Hex(), "nonce", params.Nonce.String(), "policy_id", policyID)
 			types.SendError(c, req.ID, types.QuotaExceededErrorCode, "Quota exceeded")
 			return
@@ -417,8 +415,8 @@ func (pc *PaymasterController) handleGetPaymasterData(c *gin.Context, req types.
 		log.Debug("Token payment detected, skipping quota check and record creation", "token", tokenAddr.Hex(), "sender", params.Sender.Hex(), "nonce", params.Nonce.String())
 	}
 
-	// Generate signed paymaster data
-	paymasterData, err := pc.buildAndSignPaymasterData(params, tokenAddr, paymasterVerificationGasLimit, paymasterPostOpGasLimit)
+	// Generate signed paymaster data, using real signature
+	paymasterData, err := pc.buildAndSignPaymasterData(params, tokenAddr, paymasterVerificationGasLimit, paymasterPostOpGasLimit, false /* not useStubSig */)
 	if err != nil {
 		log.Error("Failed to build and sign paymaster data", "error", err)
 		types.SendError(c, req.ID, types.PaymasterDataGenErrorCode, "Failed to generate paymaster data")
@@ -435,7 +433,7 @@ func (pc *PaymasterController) handleGetPaymasterData(c *gin.Context, req types.
 }
 
 // checkQuota verifies if the operation would exceed quota limits
-func (pc *PaymasterController) checkQuota(ctx context.Context, apiKey string, policyID int64, sender common.Address, weiAmount *big.Int) error {
+func (pc *PaymasterController) checkQuota(ctx context.Context, apiKey string, policyID int64, sender common.Address, nonce *big.Int, weiAmount *big.Int) error {
 	// Get policy to check limits
 	policy, err := pc.policyOrm.GetByAPIKeyAndPolicyID(ctx, apiKey, policyID)
 	if err != nil {
@@ -443,9 +441,14 @@ func (pc *PaymasterController) checkQuota(ctx context.Context, apiKey string, po
 	}
 
 	// Get current usage
-	currentUsageWei, err := pc.userOperationOrm.GetWalletUsage(ctx, apiKey, policyID, sender.Hex(), policy.Limits.TimeWindowHours)
+	usageStats, err := pc.userOperationOrm.GetWalletUsageStatsExcludingSameSenderAndNonce(ctx, apiKey, policyID, sender.Hex(), nonce, policy.Limits.TimeWindowHours)
 	if err != nil {
-		return fmt.Errorf("failed to get current usage: %w", err)
+		return fmt.Errorf("failed to get wallet usage stats for policy %d and sender %s: %w", policyID, sender.Hex(), err)
+	}
+
+	if usageStats.TransactionCount >= policy.Limits.MaxTransactionsPerWalletPerWindow {
+		log.Debug("Transaction count quota exceeded", "sender", sender.Hex(), "current_count", usageStats.TransactionCount, "max_count", policy.Limits.MaxTransactionsPerWalletPerWindow)
+		return fmt.Errorf("transaction count quota exceeded: sender %s has %d transactions with time window %d hours, limit is %d transactions, policy_id: %d", sender.Hex(), usageStats.TransactionCount, policy.Limits.TimeWindowHours, policy.Limits.MaxTransactionsPerWalletPerWindow, policyID)
 	}
 
 	// Parse max limit from ETH to wei
@@ -462,17 +465,17 @@ func (pc *PaymasterController) checkQuota(ctx context.Context, apiKey string, po
 	}
 
 	// Check if new operation would exceed limit
-	currentUsage := big.NewInt(currentUsageWei)
+	currentUsage := big.NewInt(usageStats.TotalWeiAmount)
 	newTotal := new(big.Int).Add(currentUsage, weiAmount)
 
 	if newTotal.Cmp(maxLimitWei) > 0 {
-		log.Debug("Quota exceeded", "sender", sender.Hex(), "current_usage_wei", currentUsage.String(), "estimated_wei", weiAmount.String(), "new_total_wei", newTotal.String(), "max_limit_wei", maxLimitWei.String(), "max_limit_eth", policy.Limits.MaxEthPerWalletPerWindow)
+		log.Debug("ETH quota exceeded", "sender", sender.Hex(), "current_usage_wei", currentUsage.String(), "estimated_wei", weiAmount.String(), "new_total_wei", newTotal.String(), "max_limit_wei", maxLimitWei.String(), "max_limit_eth", policy.Limits.MaxEthPerWalletPerWindow)
 
 		// Convert back to ETH for user-friendly error message
 		currentUsageEth := new(big.Float).Quo(new(big.Float).SetInt(currentUsage), new(big.Float).SetInt(weiPerEth))
 		newTotalEth := new(big.Float).Quo(new(big.Float).SetInt(newTotal), new(big.Float).SetInt(weiPerEth))
 
-		return fmt.Errorf("quota exceeded: current usage %.6f ETH + new operation would total %.6f ETH, limit is %s ETH", currentUsageEth, newTotalEth, policy.Limits.MaxEthPerWalletPerWindow)
+		return fmt.Errorf("ETH quota exceeded: current usage %.6f ETH + new operation would total %.6f ETH, limit is %s ETH", currentUsageEth, newTotalEth, policy.Limits.MaxEthPerWalletPerWindow)
 	}
 
 	return nil
@@ -480,11 +483,15 @@ func (pc *PaymasterController) checkQuota(ctx context.Context, apiKey string, po
 
 // createOrUpdateRecord creates or updates the operation record
 func (pc *PaymasterController) createOrUpdateRecord(ctx context.Context, apiKey string, policyID int64, sender common.Address, nonce *big.Int, weiAmount *big.Int, status orm.UserOperationStatus) error {
+	nonceHash := crypto.Keccak256(nonce.Bytes())
+	hashedNonceUint := binary.BigEndian.Uint64(nonceHash[:8])
+	nonceBigInt := new(big.Int).SetUint64(hashedNonceUint % (1 << 63))
+
 	userOp := &orm.UserOperation{
 		APIKeyHash: crypto.Keccak256Hash([]byte(apiKey)).Hex(),
 		PolicyID:   policyID,
 		Sender:     sender.Hex(),
-		Nonce:      nonce.Int64(),
+		Nonce:      nonceBigInt.Int64(),
 		WeiAmount:  weiAmount.Int64(),
 		Status:     status,
 	}
@@ -519,62 +526,63 @@ func (pc *PaymasterController) calculateEstimatedWei(userOp *types.PaymasterUser
 	return new(big.Int).Mul(totalGas, maxFeePerGas)
 }
 
-func (pc *PaymasterController) parseERC7677Params(rawParams json.RawMessage) (*types.PaymasterUserOperationV7, common.Address, int64, *types.RPCError) {
+func (pc *PaymasterController) parseERC7677Params(rawParams json.RawMessage) (*types.PaymasterUserOperationV7, common.Address, int64, bool, *types.RPCError) {
 	var p []json.RawMessage
 	if err := json.Unmarshal(rawParams, &p); err != nil || len(p) != 4 { // Need exactly 4 elements for ERC-7677
 		log.Debug("Invalid params structure", "params", string(rawParams), "error", err, "length", len(p))
-		return nil, common.Address{}, 0, &types.RPCError{Code: types.InvalidParamsCode, Message: "Invalid params structure: expected an array of exactly 4 elements including context"}
+		return nil, common.Address{}, 0, false, &types.RPCError{Code: types.InvalidParamsCode, Message: "Invalid params structure: expected an array of exactly 4 elements including context"}
 	}
 
 	var userOp *types.PaymasterUserOperationV7
 	if err := json.Unmarshal(p[0], &userOp); err != nil {
 		log.Debug("Invalid userOp param", "userOp", string(p[0]), "error", err)
-		return nil, common.Address{}, 0, &types.RPCError{Code: types.InvalidParamsCode, Message: "Invalid userOp param"}
+		return nil, common.Address{}, 0, false, &types.RPCError{Code: types.InvalidParamsCode, Message: "Invalid userOp param"}
 	}
 
 	var entryPoint string
 	if err := json.Unmarshal(p[1], &entryPoint); err != nil {
 		log.Debug("Invalid entryPoint param", "entryPoint", entryPoint, "error", err)
-		return nil, common.Address{}, 0, &types.RPCError{Code: types.InvalidParamsCode, Message: "Invalid entryPoint param"}
+		return nil, common.Address{}, 0, false, &types.RPCError{Code: types.InvalidParamsCode, Message: "Invalid entryPoint param"}
 	}
 
 	if !strings.EqualFold(entryPoint, entryPointV7Address) {
 		log.Debug("Unsupported EntryPoint version", "entryPoint", entryPoint, "expected", entryPointV7Address)
-		return nil, common.Address{}, 0, &types.RPCError{Code: types.UnsupportedEntryPointCode, Message: "Unsupported EntryPoint version. Only v0.7 is supported (" + entryPointV7Address + ")."}
+		return nil, common.Address{}, 0, false, &types.RPCError{Code: types.UnsupportedEntryPointCode, Message: "Unsupported EntryPoint version. Only v0.7 is supported (" + entryPointV7Address + ")."}
 	}
 
 	var chainIDStr string
 	if err := json.Unmarshal(p[2], &chainIDStr); err != nil {
 		log.Debug("Invalid chainId param", "chainId", string(p[2]), "error", err)
-		return nil, common.Address{}, 0, &types.RPCError{Code: types.InvalidParamsCode, Message: "Invalid chainId param"}
+		return nil, common.Address{}, 0, false, &types.RPCError{Code: types.InvalidParamsCode, Message: "Invalid chainId param"}
 	}
 
 	inputChainID, success := new(big.Int).SetString(strings.TrimPrefix(chainIDStr, "0x"), 16)
 	if !success {
 		log.Debug("Failed to parse chainId", "chainId", chainIDStr)
-		return nil, common.Address{}, 0, &types.RPCError{Code: types.InvalidParamsCode, Message: "Invalid chainId format"}
+		return nil, common.Address{}, 0, false, &types.RPCError{Code: types.InvalidParamsCode, Message: "Invalid chainId format"}
 	}
 
 	if inputChainID.Cmp(big.NewInt(pc.cfg.ChainID)) != 0 {
 		log.Debug("Unsupported chainId", "chainId", inputChainID.String(), "expected", pc.cfg.ChainID)
-		return nil, common.Address{}, 0, &types.RPCError{Code: types.UnsupportedChainIDCode, Message: "Unsupported chainId. Only " + fmt.Sprint(pc.cfg.ChainID) + " is supported."}
+		return nil, common.Address{}, 0, false, &types.RPCError{Code: types.UnsupportedChainIDCode, Message: "Unsupported chainId. Only " + fmt.Sprint(pc.cfg.ChainID) + " is supported."}
 	}
 
 	type ERC7677Context struct {
-		Token    string `json:"token"`
-		PolicyID *int64 `json:"policy_id"`
+		Token                   string `json:"token"`
+		PolicyID                *int64 `json:"policy_id"`
+		ForceIsFinalForEstimate bool   `json:"force_is_final_for_estimate"`
 	}
 
 	var context *ERC7677Context
 	if err := json.Unmarshal(p[3], &context); err != nil {
 		log.Debug("Invalid context param", "context", string(p[3]), "error", err)
-		return nil, common.Address{}, 0, &types.RPCError{Code: types.InvalidParamsCode, Message: "Invalid context param"}
+		return nil, common.Address{}, 0, false, &types.RPCError{Code: types.InvalidParamsCode, Message: "Invalid context param"}
 	}
 
 	// Validate required context fields
 	if context == nil {
 		log.Debug("Missing context")
-		return nil, common.Address{}, 0, &types.RPCError{Code: types.InvalidParamsCode, Message: "Context is required"}
+		return nil, common.Address{}, 0, false, &types.RPCError{Code: types.InvalidParamsCode, Message: "Context is required"}
 	}
 
 	// Handle token address
@@ -583,7 +591,7 @@ func (pc *PaymasterController) parseERC7677Params(rawParams json.RawMessage) (*t
 		tokenAddr = common.HexToAddress(context.Token)
 		if tokenAddr != emptyAddr && !pc.isSupportedToken(tokenAddr) {
 			log.Debug("Unsupported token", "provided", tokenAddr.Hex(), "supported", pc.getSupportedTokensString())
-			return nil, common.Address{}, 0, &types.RPCError{
+			return nil, common.Address{}, 0, false, &types.RPCError{
 				Code:    types.UnsupportedTokenErrorCode,
 				Message: "Unsupported token. Supported tokens: " + pc.getSupportedTokensString(),
 			}
@@ -596,12 +604,12 @@ func (pc *PaymasterController) parseERC7677Params(rawParams json.RawMessage) (*t
 		// ETH payment requires policy_id
 		if context.PolicyID == nil {
 			log.Debug("Missing policy_id in context for ETH payment")
-			return nil, common.Address{}, 0, &types.RPCError{Code: types.InvalidParamsCode, Message: "policy_id is required in context for ETH payments"}
+			return nil, common.Address{}, 0, false, &types.RPCError{Code: types.InvalidParamsCode, Message: "policy_id is required in context for ETH payments"}
 		}
 
 		if *context.PolicyID < 0 {
 			log.Debug("Invalid policy_id", "policy_id", *context.PolicyID)
-			return nil, common.Address{}, 0, &types.RPCError{Code: types.InvalidParamsCode, Message: "Invalid policy_id. It must be a non-negative integer."}
+			return nil, common.Address{}, 0, false, &types.RPCError{Code: types.InvalidParamsCode, Message: "Invalid policy_id. It must be a non-negative integer."}
 		}
 
 		policyID = *context.PolicyID
@@ -610,14 +618,14 @@ func (pc *PaymasterController) parseERC7677Params(rawParams json.RawMessage) (*t
 		if context.PolicyID != nil {
 			if *context.PolicyID < 0 {
 				log.Debug("Invalid policy_id", "policy_id", *context.PolicyID)
-				return nil, common.Address{}, 0, &types.RPCError{Code: types.InvalidParamsCode, Message: "Invalid policy_id. It must be a non-negative integer."}
+				return nil, common.Address{}, 0, false, &types.RPCError{Code: types.InvalidParamsCode, Message: "Invalid policy_id. It must be a non-negative integer."}
 			}
 			policyID = *context.PolicyID
 		}
 		log.Debug("Token payment detected, policy_id not required", "token", tokenAddr.Hex(), "policy_id", policyID, "sender", userOp.Sender.Hex(), "nonce", userOp.Nonce.String())
 	}
 
-	return userOp, tokenAddr, policyID, nil
+	return userOp, tokenAddr, policyID, context.ForceIsFinalForEstimate, nil
 }
 
 // getTokenExchangeRate returns the exchange rate for the specified token
@@ -771,7 +779,7 @@ func (pc *PaymasterController) getChainlinkETHPrice(aggregatorAddress string) (*
 }
 
 // buildAndSignPaymasterData builds and signs paymaster data
-func (pc *PaymasterController) buildAndSignPaymasterData(userOp *types.PaymasterUserOperationV7, tokenAddr common.Address, paymasterVerificationGasLimit, paymasterPostOpGasLimit *big.Int) (string, error) {
+func (pc *PaymasterController) buildAndSignPaymasterData(userOp *types.PaymasterUserOperationV7, tokenAddr common.Address, paymasterVerificationGasLimit, paymasterPostOpGasLimit *big.Int, useStubSig bool) (string, error) {
 	// Current timestamp in seconds
 	currentTime := time.Now().Unix()
 
@@ -785,7 +793,7 @@ func (pc *PaymasterController) buildAndSignPaymasterData(userOp *types.Paymaster
 	// Configuration flags
 	allowAnyBundler := true
 	precheckBalance := true
-	prepaymentRequired := true
+	prepaymentRequired := false
 
 	// Set default values for ETH
 	exchangeRate := big.NewInt(0) // Zero for ETH
@@ -813,26 +821,40 @@ func (pc *PaymasterController) buildAndSignPaymasterData(userOp *types.Paymaster
 		paymasterPostOpGasLimit,
 	)
 
-	// Hash user operation with paymaster data
-	hash := pc.getPaymasterDataHash(
-		userOp,
-		validUntil,
-		validAfter,
-		sponsorUUID,
-		allowAnyBundler,
-		precheckBalance,
-		prepaymentRequired,
-		tokenAddr,
-		pc.cfg.PaymasterAddressV7,
-		exchangeRate,
-		paymasterPostOpGasLimit,
-		paymasterVerificationGasLimit,
-		paymasterPostOpGasLimit)
+	var signature []byte
+	if useStubSig {
+		// Use a dummy but valid signature
+		const stubSigHex = "23359dd4c22d55ddf471f5b9c9cdced955e94f2848a2390cc5822d65ebf949e4546ecbbb5edc4ae388d9c5d62dcaf2a0f2e1ecdb56f26f0cb04b8458845b80201b"
+		var err error
+		signature, err = hex.DecodeString(stubSigHex)
+		if err != nil {
+			return "", fmt.Errorf("invalid stub signature hex: %w", err)
+		}
+		if len(signature) != 65 {
+			return "", fmt.Errorf("stub signature must be 65 bytes, got %d", len(signature))
+		}
+	} else {
+		hash := pc.getPaymasterDataHash(
+			userOp,
+			validUntil,
+			validAfter,
+			sponsorUUID,
+			allowAnyBundler,
+			precheckBalance,
+			prepaymentRequired,
+			tokenAddr,
+			pc.cfg.PaymasterAddressV7,
+			exchangeRate,
+			paymasterPostOpGasLimit,
+			paymasterVerificationGasLimit,
+			paymasterPostOpGasLimit,
+		)
 
-	// Sign the hash
-	signature, err := pc.signHash(hash)
-	if err != nil {
-		return "", fmt.Errorf("failed to sign paymaster data hash, userOp: %v, paymasterData: %s, hash: %s, error: %w", userOp, hex.EncodeToString(paymasterData), hex.EncodeToString(hash), err)
+		var err error
+		signature, err = pc.signHash(hash)
+		if err != nil {
+			return "", fmt.Errorf("failed to sign paymaster data hash, userOp: %v, paymasterData: %s, hash: %s, error: %w", userOp, hex.EncodeToString(paymasterData), hex.EncodeToString(hash), err)
+		}
 	}
 
 	// Append signature to paymaster data
@@ -1013,14 +1035,14 @@ func packGasLimits(high, low *big.Int) [32]byte {
 // The token address is either the zero address for ETH or the USDT address, validated before calling this function.
 func calculatePaymasterGasLimits(tokenAddr common.Address, usdtAddress common.Address, usdcAddress common.Address) (*big.Int, *big.Int) {
 	// Set default values for ETH
-	paymasterPostOpGasLimit := big.NewInt(5000)
-	paymasterVerificationGasLimit := big.NewInt(25000)
+	paymasterPostOpGasLimit := big.NewInt(10000)
+	paymasterVerificationGasLimit := big.NewInt(50000)
 
 	// If using USDT token
 	if tokenAddr != emptyAddr {
 		if strings.EqualFold(tokenAddr.Hex(), usdtAddress.Hex()) || strings.EqualFold(tokenAddr.Hex(), usdcAddress.Hex()) {
-			paymasterPostOpGasLimit = big.NewInt(42000)
-			paymasterVerificationGasLimit = big.NewInt(35000)
+			paymasterPostOpGasLimit = big.NewInt(50000)
+			paymasterVerificationGasLimit = big.NewInt(60000)
 		}
 	}
 

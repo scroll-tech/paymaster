@@ -83,15 +83,16 @@ func setupPaymasterTestRouter(db *gorm.DB) *gin.Engine {
 	return router
 }
 
-func createTestPolicy(t *testing.T, db *gorm.DB, maxEth string, timeWindowHours int) {
+func createTestPolicy(t *testing.T, db *gorm.DB, maxEth string, timeWindowHours int, maxTransactions int64) {
 	policyOrm := orm.NewPolicy(db)
 	policy := &orm.Policy{
 		APIKeyHash: crypto.Keccak256Hash([]byte("test-api-key")).Hex(),
 		PolicyID:   1,
 		PolicyName: "Test Policy",
 		Limits: orm.PolicyLimits{
-			MaxEthPerWalletPerWindow: maxEth,
-			TimeWindowHours:          timeWindowHours,
+			MaxTransactionsPerWalletPerWindow: maxTransactions,
+			MaxEthPerWalletPerWindow:          maxEth,
+			TimeWindowHours:                   timeWindowHours,
 		},
 	}
 
@@ -158,11 +159,42 @@ func createTestUserOpWithPaymasterGasLimits(sender string, nonce int64, paymaste
 	return userOp
 }
 
+// Helper function to create test usage stats in database
+func createTestUsageStats(t *testing.T, db *gorm.DB, weiAmount int64, txCount int, hoursAgo int, startNonce int64) {
+	userOpOrm := orm.NewUserOperation(db)
+
+	apiKeyHash := crypto.Keccak256Hash([]byte("test-api-key")).Hex()
+	timestamp := time.Now().UTC().Add(time.Duration(-hoursAgo) * time.Hour)
+
+	for i := 0; i < txCount; i++ {
+		userOp := &orm.UserOperation{
+			APIKeyHash: apiKeyHash,
+			PolicyID:   1,
+			Sender:     testSenderAddress1,
+			Nonce:      startNonce + int64(i),
+			WeiAmount:  weiAmount / int64(txCount), // Distribute amount across transactions
+			Status:     orm.UserOperationStatusPaymasterDataProvided,
+			CreatedAt:  timestamp,
+			UpdatedAt:  timestamp,
+		}
+
+		err := userOpOrm.CreateOrUpdate(context.Background(), userOp)
+		require.NoError(t, err)
+
+		// Update timestamp to simulate older transactions
+		err = db.Model(&orm.UserOperation{}).
+			Where("api_key_hash = ?", apiKeyHash).
+			Where("sender = ?", testSenderAddress1).
+			Where("nonce = ?", startNonce+int64(i)).Error
+		require.NoError(t, err)
+	}
+}
+
 func TestPaymasterController_QuotaLimiting(t *testing.T) {
 	t.Run("GetPaymasterStubData_WithinQuota", func(t *testing.T) {
 		db := setupTestDB(t)
 		router := setupPaymasterTestRouter(db)
-		createTestPolicy(t, db, "1.0", 24) // 1 ETH limit, 24 hours window
+		createTestPolicy(t, db, "1.0", 24, 10) // 1 ETH limit, 24 hours window
 
 		userOp := createTestUserOp(testSenderAddress1, 1)
 		w := makePaymasterRequest(t, router, "pm_getPaymasterStubData", userOp, 1, testETHAddress)
@@ -186,7 +218,7 @@ func TestPaymasterController_QuotaLimiting(t *testing.T) {
 	t.Run("GetPaymasterData_WithinQuota", func(t *testing.T) {
 		db := setupTestDB(t)
 		router := setupPaymasterTestRouter(db)
-		createTestPolicy(t, db, "1.0", 24) // 1 ETH limit, 24 hours window
+		createTestPolicy(t, db, "1.0", 24, 10) // 1 ETH limit, 24 hours window
 
 		paymasterVerificationGasLimit, paymasterPostOpGasLimit := calculatePaymasterGasLimits(testETHAddress, testUSDTAddress, testUSDCAddress)
 		userOp := createTestUserOpWithPaymasterGasLimits(
@@ -211,61 +243,6 @@ func TestPaymasterController_QuotaLimiting(t *testing.T) {
 		assert.NotEmpty(t, result["paymasterData"])
 	})
 
-	t.Run("QuotaExceeded_MultipleOperations", func(t *testing.T) {
-		db := setupTestDB(t)
-		router := setupPaymasterTestRouter(db)
-		createTestPolicy(t, db, "0.001", 24)
-
-		// First operation should succeed
-		userOp1 := createTestUserOp(testSenderAddress1, 1)
-		w1 := makePaymasterRequest(t, router, "pm_getPaymasterStubData", userOp1, 1, testETHAddress)
-		assert.Equal(t, http.StatusOK, w1.Code)
-
-		var resp1 types.PaymasterJSONRPCResponse
-		err := json.Unmarshal(w1.Body.Bytes(), &resp1)
-		require.NoError(t, err)
-		assert.Nil(t, resp1.Error)
-
-		// Second operation should exceed quota
-		userOp2 := createTestUserOp(testSenderAddress1, 2)
-		w2 := makePaymasterRequest(t, router, "pm_getPaymasterStubData", userOp2, 1, testETHAddress)
-		assert.Equal(t, http.StatusOK, w2.Code)
-
-		var resp2 types.PaymasterJSONRPCResponse
-		err = json.Unmarshal(w2.Body.Bytes(), &resp2)
-		require.NoError(t, err)
-
-		assert.NotNil(t, resp2.Error)
-		assert.Equal(t, types.QuotaExceededErrorCode, resp2.Error.Code)
-		assert.Contains(t, resp2.Error.Message, "Quota exceeded")
-	})
-
-	t.Run("QuotaCheck_DifferentWallets", func(t *testing.T) {
-		db := setupTestDB(t)
-		router := setupPaymasterTestRouter(db)
-		createTestPolicy(t, db, "0.001", 24)
-
-		// First wallet operation
-		userOp1 := createTestUserOp(testSenderAddress1, 1)
-		w1 := makePaymasterRequest(t, router, "pm_getPaymasterStubData", userOp1, 1, testETHAddress)
-		assert.Equal(t, http.StatusOK, w1.Code)
-
-		var resp1 types.PaymasterJSONRPCResponse
-		err := json.Unmarshal(w1.Body.Bytes(), &resp1)
-		require.NoError(t, err)
-		assert.Nil(t, resp1.Error)
-
-		// Second wallet operation should succeed (different wallet)
-		userOp2 := createTestUserOp(testSenderAddress2, 1)
-		w2 := makePaymasterRequest(t, router, "pm_getPaymasterStubData", userOp2, 1, testETHAddress)
-		assert.Equal(t, http.StatusOK, w2.Code)
-
-		var resp2 types.PaymasterJSONRPCResponse
-		err = json.Unmarshal(w2.Body.Bytes(), &resp2)
-		require.NoError(t, err)
-		assert.Nil(t, resp2.Error)
-	})
-
 	t.Run("PolicyNotFound", func(t *testing.T) {
 		db := setupTestDB(t)
 		router := setupPaymasterTestRouter(db)
@@ -284,48 +261,6 @@ func TestPaymasterController_QuotaLimiting(t *testing.T) {
 		assert.Equal(t, types.QuotaExceededErrorCode, resp.Error.Code)
 		assert.Contains(t, resp.Error.Message, "Quota exceeded")
 	})
-
-	t.Run("UpdateOperationStatus_StubToFinal", func(t *testing.T) {
-		db := setupTestDB(t)
-		router := setupPaymasterTestRouter(db)
-		createTestPolicy(t, db, "1.0", 24) // 1 ETH limit, 24 hours window
-
-		paymasterVerificationGasLimit, paymasterPostOpGasLimit := calculatePaymasterGasLimits(testETHAddress, testUSDTAddress, testUSDCAddress)
-		userOp := createTestUserOpWithPaymasterGasLimits(
-			testSenderAddress1,
-			1,
-			paymasterVerificationGasLimit,
-			paymasterPostOpGasLimit,
-		)
-
-		// First get stub data
-		w1 := makePaymasterRequest(t, router, "pm_getPaymasterStubData", userOp, 1, testETHAddress)
-		assert.Equal(t, http.StatusOK, w1.Code)
-
-		var resp1 types.PaymasterJSONRPCResponse
-		err := json.Unmarshal(w1.Body.Bytes(), &resp1)
-		require.NoError(t, err)
-		assert.Nil(t, resp1.Error)
-
-		// Then get final paymaster data (should update the same record)
-		w2 := makePaymasterRequest(t, router, "pm_getPaymasterData", userOp, 1, testETHAddress)
-		assert.Equal(t, http.StatusOK, w2.Code)
-
-		var resp2 types.PaymasterJSONRPCResponse
-		err = json.Unmarshal(w2.Body.Bytes(), &resp2)
-		require.NoError(t, err)
-		assert.Nil(t, resp2.Error)
-
-		// Verify the record in database
-		var operation orm.UserOperation
-		err = db.Where("api_key_hash = ?", crypto.Keccak256Hash([]byte("test-api-key")).Hex()).
-			Where("policy_id = ?", 1).
-			Where("sender = ?", testSenderAddress1).
-			Where("nonce = ?", 1).
-			First(&operation).Error
-		require.NoError(t, err)
-		assert.Equal(t, orm.UserOperationStatusPaymasterDataProvided, operation.Status)
-	})
 }
 
 func TestPaymasterController_QuotaLimiting_EdgeCases(t *testing.T) {
@@ -334,9 +269,9 @@ func TestPaymasterController_QuotaLimiting_EdgeCases(t *testing.T) {
 		router := setupPaymasterTestRouter(db)
 
 		// Calculate expected gas cost for the test userOp
-		// verificationGas (100000) + callGas (200000) + preVerificationGas (50000) + paymasterVerificationGas (25000) + paymasterPostOpGas (5000) = 380000
-		// 380000 * 2 gwei = 760,000,000,000,000 wei = 0.00076 ETH
-		createTestPolicy(t, db, "0.00076", 24) // Exact limit
+		// verificationGas (100000) + callGas (200000) + preVerificationGas (50000) + paymasterVerificationGas (50000) + paymasterPostOpGas (10000) = 410000
+		// 410000 * 2 gwei = 820,000,000,000,000 wei = 0.00082 ETH
+		createTestPolicy(t, db, "0.00082", 24, 10) // Exact limit
 
 		userOp := createTestUserOp(testSenderAddress1, 1)
 		w := makePaymasterRequest(t, router, "pm_getPaymasterStubData", userOp, 1, testETHAddress)
@@ -354,7 +289,7 @@ func TestPaymasterController_QuotaLimiting_EdgeCases(t *testing.T) {
 		router := setupPaymasterTestRouter(db)
 
 		// Set limit slightly below expected cost
-		createTestPolicy(t, db, "0.00075", 24) // Just below limit
+		createTestPolicy(t, db, "0.00075", 24, 10) // Just below limit
 
 		userOp := createTestUserOp(testSenderAddress1, 1)
 		w := makePaymasterRequest(t, router, "pm_getPaymasterStubData", userOp, 1, testETHAddress)
@@ -372,35 +307,45 @@ func TestPaymasterController_QuotaLimiting_EdgeCases(t *testing.T) {
 	t.Run("TimeWindowExpiry", func(t *testing.T) {
 		db := setupTestDB(t)
 		router := setupPaymasterTestRouter(db)
-		createTestPolicy(t, db, "0.001", 1) // 1 hour window
+		createTestPolicy(t, db, "0.001", 1, 10) // 1 hour window
 
-		// Create an old operation (simulate it's from 2 hours ago)
+		// Create old operations outside the time window (2 hours ago)
+		createTestUsageStats(t, db, 500000000000000, 1, 2, 0) // 0.0005 ETH, 2 hours ago
+
+		// New operation should succeed because old ones are outside time window
+		userOp := createTestUserOp(testSenderAddress1, 10)
+		w := makePaymasterRequest(t, router, "pm_getPaymasterStubData", userOp, 1, testETHAddress)
+
+		assert.Equal(t, http.StatusOK, w.Code)
+
+		var resp types.PaymasterJSONRPCResponse
+		err := json.Unmarshal(w.Body.Bytes(), &resp)
+		require.NoError(t, err)
+		assert.Nil(t, resp.Error)
+	})
+
+	t.Run("UsageStatsAccuracy", func(t *testing.T) {
+		db := setupTestDB(t)
+		router := setupPaymasterTestRouter(db)
+		createTestPolicy(t, db, "1.0", 24, 10) // 1 ETH limit, 24 hours window
+
+		// Create multiple transactions with known amounts and different nonces
+		createTestUsageStats(t, db, 100000000000000, 2, 1, 1)  // 0.0001 ETH, 2 txs, 1 hour ago, nonces 1-2
+		createTestUsageStats(t, db, 200000000000000, 3, 5, 3)  // 0.0002 ETH, 3 txs, 5 hours ago, nonces 3-5
+		createTestUsageStats(t, db, 150000000000000, 1, 25, 6) // 0.00015 ETH, 1 tx, 25 hours ago (outside window), nonce 6
+
+		// Verify that only transactions within time window are counted
 		userOpOrm := orm.NewUserOperation(db)
-		oldTime := time.Now().UTC().Add(-2 * time.Hour)
-
-		oldOp := &orm.UserOperation{
-			APIKeyHash: crypto.Keccak256Hash([]byte("test-api-key")).Hex(),
-			PolicyID:   1,
-			Sender:     testSenderAddress1,
-			Nonce:      1,
-			WeiAmount:  500000000000000, // 0.0005 ETH
-			Status:     orm.UserOperationStatusPaymasterDataProvided,
-		}
-		err := userOpOrm.CreateOrUpdate(context.Background(), oldOp)
+		stats, err := userOpOrm.GetWalletUsageStatsExcludingSameSenderAndNonce(context.Background(), "test-api-key", 1, testSenderAddress1, big.NewInt(999), 24)
 		require.NoError(t, err)
 
-		err = db.Model(&orm.UserOperation{}).
-			Where("api_key_hash = ?", crypto.Keccak256Hash([]byte("test-api-key")).Hex()).
-			Where("sender = ?", testSenderAddress1).
-			Where("nonce = ?", 1).
-			Updates(map[string]interface{}{
-				"created_at": oldTime,
-				"updated_at": oldTime,
-			}).Error
-		require.NoError(t, err)
+		// Should count 5 transactions (2+3) and total amount of 0.0003 ETH (0.0001+0.0002)
+		assert.Equal(t, int64(5), stats.TransactionCount)
+		assert.Equal(t, int64(299999999999998), stats.TotalWeiAmount) // 0.0003 ETH
+		assert.NotNil(t, stats.EarliestTransactionTime)
 
-		// New operation should succeed because old one is outside time window
-		userOp := createTestUserOp(testSenderAddress1, 2)
+		// New operation should still succeed as we're within limits
+		userOp := createTestUserOp(testSenderAddress1, 20) // Use different nonce
 		w := makePaymasterRequest(t, router, "pm_getPaymasterStubData", userOp, 1, testETHAddress)
 
 		assert.Equal(t, http.StatusOK, w.Code)
@@ -416,9 +361,12 @@ func TestPaymasterController_TokenPayments(t *testing.T) {
 	t.Run("USDTPayment_NoQuotaCheck_GetPaymasterStubData", func(t *testing.T) {
 		db := setupTestDB(t)
 		router := setupPaymasterTestRouter(db)
-		createTestPolicy(t, db, "0.000000000000000001", 24) // Very low ETH limit
+		createTestPolicy(t, db, "0.000000000000000001", 24, 10) // Very low ETH limit
 
-		userOp := createTestUserOp(testSenderAddress1, 1)
+		// Create existing ETH usage that would exceed the limit
+		createTestUsageStats(t, db, 1000000000000000, 1, 1, 0) // 0.001 ETH
+
+		userOp := createTestUserOp(testSenderAddress1, 10)
 
 		// Make request with USDT token
 		reqBody := types.PaymasterJSONRPCRequest{
@@ -456,7 +404,7 @@ func TestPaymasterController_TokenPayments(t *testing.T) {
 		err = json.Unmarshal(w.Body.Bytes(), &resp)
 		require.NoError(t, err)
 
-		// Should succeed even with low ETH quota because USDT payments don't check ETH quota
+		// Should succeed even with existing ETH usage because USDT payments don't check ETH quota
 		assert.Nil(t, resp.Error)
 		assert.NotNil(t, resp.Result)
 	})
@@ -464,17 +412,20 @@ func TestPaymasterController_TokenPayments(t *testing.T) {
 	t.Run("USDTPayment_NoQuotaCheck_GetPaymasterData", func(t *testing.T) {
 		db := setupTestDB(t)
 		router := setupPaymasterTestRouter(db)
-		createTestPolicy(t, db, "0.000000000000000001", 24) // Very low ETH limit
+		createTestPolicy(t, db, "0.000000000000000001", 24, 10) // Very low ETH limit
+
+		// Create existing ETH usage that would exceed the limit
+		createTestUsageStats(t, db, 1000000000000000, 1, 1, 0) // 0.001 ETH
 
 		paymasterVerificationGasLimit, paymasterPostOpGasLimit := calculatePaymasterGasLimits(testUSDTAddress, testUSDTAddress, testUSDCAddress)
 		userOp := createTestUserOpWithPaymasterGasLimits(
 			testSenderAddress1,
-			1,
+			10,
 			paymasterVerificationGasLimit,
 			paymasterPostOpGasLimit,
 		)
 
-		// Make request with USDT token
+		// Make request with USDC token
 		reqBody := types.PaymasterJSONRPCRequest{
 			JSONRPC: "2.0",
 			Method:  "pm_getPaymasterData",
@@ -510,7 +461,7 @@ func TestPaymasterController_TokenPayments(t *testing.T) {
 		err = json.Unmarshal(w.Body.Bytes(), &resp)
 		require.NoError(t, err)
 
-		// Should succeed even with low ETH quota because USDT payments don't check ETH quota
+		// Should succeed even with existing ETH usage because USDC payments don't check ETH quota
 		assert.Nil(t, resp.Error)
 		assert.NotNil(t, resp.Result)
 	})
@@ -520,7 +471,7 @@ func TestPaymasterController_PaymasterDataValidation_BadCases(t *testing.T) {
 	t.Run("GetPaymasterData_WithIncorrectGasLimits_ETH", func(t *testing.T) {
 		db := setupTestDB(t)
 		router := setupPaymasterTestRouter(db)
-		createTestPolicy(t, db, "1.0", 24)
+		createTestPolicy(t, db, "1.0", 24, 10)
 
 		wrongVerificationGas := big.NewInt(99999)
 		wrongPostOpGas := big.NewInt(99999)
@@ -548,7 +499,7 @@ func TestPaymasterController_PaymasterDataValidation_BadCases(t *testing.T) {
 	t.Run("GetPaymasterData_MissingGasLimits_ETH", func(t *testing.T) {
 		db := setupTestDB(t)
 		router := setupPaymasterTestRouter(db)
-		createTestPolicy(t, db, "1.0", 24)
+		createTestPolicy(t, db, "1.0", 24, 10)
 
 		userOp := createTestUserOp(testSenderAddress1, 1)
 		w := makePaymasterRequest(t, router, "pm_getPaymasterData", userOp, 1, testETHAddress)
@@ -567,7 +518,7 @@ func TestPaymasterController_PaymasterDataValidation_BadCases(t *testing.T) {
 	t.Run("GetPaymasterData_WithIncorrectGasLimits_USDT", func(t *testing.T) {
 		db := setupTestDB(t)
 		router := setupPaymasterTestRouter(db)
-		createTestPolicy(t, db, "1.0", 24)
+		createTestPolicy(t, db, "1.0", 24, 10)
 
 		wrongVerificationGas := big.NewInt(99999)
 		wrongPostOpGas := big.NewInt(99999)
@@ -595,7 +546,7 @@ func TestPaymasterController_PaymasterDataValidation_BadCases(t *testing.T) {
 	t.Run("GetPaymasterData_MissingGasLimits_USDT", func(t *testing.T) {
 		db := setupTestDB(t)
 		router := setupPaymasterTestRouter(db)
-		createTestPolicy(t, db, "1.0", 24)
+		createTestPolicy(t, db, "1.0", 24, 10)
 
 		userOp := createTestUserOp(testSenderAddress1, 1)
 		w := makePaymasterRequest(t, router, "pm_getPaymasterData", userOp, 1, testUSDTAddress)

@@ -3,8 +3,11 @@ package orm
 
 import (
 	"context"
+	"encoding/binary"
+	"math/big"
 	"time"
 
+	"github.com/cloudflare/cfssl/log"
 	"github.com/ethereum/go-ethereum/crypto"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -64,18 +67,61 @@ func (u *UserOperation) CreateOrUpdate(ctx context.Context, userOp *UserOperatio
 		Create(userOp).Error
 }
 
-// GetWalletUsage calculates the ETH amount used by a specific sender within the time window for a specific policy
-func (u *UserOperation) GetWalletUsage(ctx context.Context, apiKey string, policyID int64, sender string, timeWindowHours int) (int64, error) {
-	var usage int64
+// WalletUsageStats represents the usage statistics for a wallet
+type WalletUsageStats struct {
+	TransactionCount        int64      `json:"transaction_count" gorm:"column:count"`
+	TotalWeiAmount          int64      `json:"total_wei_amount" gorm:"column:total_wei_amount"`
+	EarliestTransactionTime *time.Time `json:"earliest_transaction_time,omitempty" gorm:"column:earliest_transaction_time"`
+}
+
+// GetWalletUsageStats gets both transaction count and total wei amount in a single query
+func (u *UserOperation) GetWalletUsageStats(ctx context.Context, apiKey string, policyID int64, sender string, timeWindowHours int) (*WalletUsageStats, error) {
 	apiKeyHash := crypto.Keccak256Hash([]byte(apiKey)).Hex()
-	err := u.db.WithContext(ctx).
+	timeThreshold := time.Now().UTC().Add(time.Duration(-timeWindowHours) * time.Hour)
+
+	result := &WalletUsageStats{}
+
+	if err := u.db.WithContext(ctx).
 		Model(&UserOperation{}).
-		Select("COALESCE(SUM(wei_amount), 0)").
+		Select("COUNT(*) as count, COALESCE(SUM(wei_amount), 0) as total_wei_amount, MIN(updated_at) as earliest_transaction_time").
 		Where("api_key_hash = ?", apiKeyHash).
 		Where("policy_id = ?", policyID).
 		Where("sender = ?", sender).
-		Where("updated_at >= ?", time.Now().UTC().Add(time.Duration(-timeWindowHours)*time.Hour)).
-		Scan(&usage).Error
+		Where("updated_at >= ?", timeThreshold).
+		Scan(&result).Error; err != nil {
+		return nil, err
+	}
 
-	return usage, err
+	log.Debug("GetWalletUsageStats result", "count", result.TransactionCount, "total_wei_amount", result.TotalWeiAmount, "earliest_time", result.EarliestTransactionTime)
+
+	return result, nil
+}
+
+// GetWalletUsageStatsExcludingSameSenderAndNonce gets both transaction count and total wei amount in a single query
+// Excludes records with the same sender and nonce combination
+func (u *UserOperation) GetWalletUsageStatsExcludingSameSenderAndNonce(ctx context.Context, apiKey string, policyID int64, sender string, nonce *big.Int, timeWindowHours int) (*WalletUsageStats, error) {
+	apiKeyHash := crypto.Keccak256Hash([]byte(apiKey)).Hex()
+	timeThreshold := time.Now().UTC().Add(time.Duration(-timeWindowHours) * time.Hour)
+
+	nonceHash := crypto.Keccak256(nonce.Bytes())
+	hashedNonceUint := binary.BigEndian.Uint64(nonceHash[:8])
+	nonceBigInt := new(big.Int).SetUint64(hashedNonceUint % (1 << 63))
+
+	result := &WalletUsageStats{}
+
+	if err := u.db.WithContext(ctx).
+		Model(&UserOperation{}).
+		Select("COUNT(*) as count, COALESCE(SUM(wei_amount), 0) as total_wei_amount, MIN(updated_at) as earliest_transaction_time").
+		Where("api_key_hash = ?", apiKeyHash).
+		Where("policy_id = ?", policyID).
+		Where("sender = ?", sender).
+		Where("updated_at >= ?", timeThreshold).
+		Not("sender = ? AND nonce = ?", sender, nonceBigInt.Int64()). // exclude same sender and nonce
+		Scan(&result).Error; err != nil {
+		return nil, err
+	}
+
+	log.Debug("GetWalletUsageStats result", "count", result.TransactionCount, "total_wei_amount", result.TotalWeiAmount, "earliest_time", result.EarliestTransactionTime)
+
+	return result, nil
 }
