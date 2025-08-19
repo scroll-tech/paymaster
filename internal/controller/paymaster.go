@@ -85,6 +85,7 @@ func NewPaymasterController(cfg *config.Config, db *gorm.DB) *PaymasterControlle
 		log.Info("Paymaster signer initialized with private key", "address", pc.signerAddress.Hex())
 	} else {
 		// Initialize with AWS KMS
+		// FIXME: AWS KMS signer is not tested yet.
 		if err := pc.initializeKMSSigner(cfg.AWSKMSKeyID); err != nil {
 			log.Crit("Failed to initialize KMS signer", "error", err)
 		}
@@ -133,6 +134,7 @@ func (pc *PaymasterController) initializePrivateKeySigner(privateKeyHex string) 
 }
 
 // initializeKMSSigner initializes the signer with AWS KMS
+// FIXME: AWS KMS signer is not tested yet.
 func (pc *PaymasterController) initializeKMSSigner(keyID string) error {
 	// Load AWS configuration
 	cfg, err := awsConfig.LoadDefaultConfig(context.Background())
