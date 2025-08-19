@@ -981,7 +981,6 @@ func (pc *PaymasterController) signHash(hash []byte) ([]byte, error) {
 	ethSignedHash := crypto.Keccak256(fullMessage)
 
 	if pc.signerKey != nil {
-		// Sign with private key
 		return pc.signHashWithPrivateKey(ethSignedHash)
 	}
 
