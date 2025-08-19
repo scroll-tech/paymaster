@@ -96,20 +96,20 @@ func NewPaymasterController(cfg *config.Config, db *gorm.DB) *PaymasterControlle
 
 // initializePrivateKeySigner initializes the signer with a private key
 func (pc *PaymasterController) initializePrivateKeySigner(privateKeyHex string) error {
-  // Validate input
-  if privateKeyHex == "" {
-    return fmt.Errorf("private key cannot be empty")
-  }
+	// Validate input
+	if privateKeyHex == "" {
+		return fmt.Errorf("private key cannot be empty")
+	}
 
 	// Handle private key with or without 0x prefix
 	if strings.HasPrefix(privateKeyHex, "0x") || strings.HasPrefix(privateKeyHex, "0X") {
 		privateKeyHex = privateKeyHex[2:]
-  }
+	}
 
-  // Validate hex string length (64 characters for 32 bytes)
-  if len(privateKeyHex) != 64 {
-      return fmt.Errorf("invalid private key length: expected 64 hex characters, got %d", len(privateKeyHex))
-  }
+	// Validate hex string length (64 characters for 32 bytes)
+	if len(privateKeyHex) != 64 {
+		return fmt.Errorf("invalid private key length: expected 64 hex characters, got %d", len(privateKeyHex))
+	}
 
 	privateKeyBytes, err := hex.DecodeString(privateKeyHex)
 	if err != nil {
@@ -124,10 +124,10 @@ func (pc *PaymasterController) initializePrivateKeySigner(privateKeyHex string) 
 	pc.signerKey = signerKey
 	pc.signerAddress = crypto.PubkeyToAddress(signerKey.PublicKey)
 
-  // 
-  for i := range privateKeyBytes {
-    privateKeyBytes[i] = 0
-  }
+	// Clear sensitive data from memory
+	for i := range privateKeyBytes {
+		privateKeyBytes[i] = 0
+	}
 
 	return nil
 }
