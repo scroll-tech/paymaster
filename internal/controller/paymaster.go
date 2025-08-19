@@ -55,8 +55,8 @@ type PaymasterController struct {
 
 // NewPaymasterController creates and initializes a new PaymasterController.
 func NewPaymasterController(cfg *config.Config, db *gorm.DB) *PaymasterController {
-	if cfg.APIKey == "" {
-		log.Crit("API key is required")
+	if len(cfg.APIKeys) == 0 {
+		log.Crit("API keys are required")
 	}
 
 	pc := &PaymasterController{
@@ -96,6 +96,21 @@ func NewPaymasterController(cfg *config.Config, db *gorm.DB) *PaymasterControlle
 
 // initializePrivateKeySigner initializes the signer with a private key
 func (pc *PaymasterController) initializePrivateKeySigner(privateKeyHex string) error {
+  // Validate input
+  if privateKeyHex == "" {
+    return fmt.Errorf("private key cannot be empty")
+  }
+
+	// Handle private key with or without 0x prefix
+	if strings.HasPrefix(privateKeyHex, "0x") || strings.HasPrefix(privateKeyHex, "0X") {
+		privateKeyHex = privateKeyHex[2:]
+  }
+
+  // Validate hex string length (64 characters for 32 bytes)
+  if len(privateKeyHex) != 64 {
+      return fmt.Errorf("invalid private key length: expected 64 hex characters, got %d", len(privateKeyHex))
+  }
+
 	privateKeyBytes, err := hex.DecodeString(privateKeyHex)
 	if err != nil {
 		return fmt.Errorf("failed to decode private key: %w", err)
@@ -108,6 +123,12 @@ func (pc *PaymasterController) initializePrivateKeySigner(privateKeyHex string) 
 
 	pc.signerKey = signerKey
 	pc.signerAddress = crypto.PubkeyToAddress(signerKey.PublicKey)
+
+  // 
+  for i := range privateKeyBytes {
+    privateKeyBytes[i] = 0
+  }
+
 	return nil
 }
 
@@ -306,9 +327,9 @@ func (pc *PaymasterController) handleGetPaymasterStubData(c *gin.Context, req ty
 		return
 	}
 
-	paymasterVerificationGasLimit, paymasterPostOpGasLimit := calculatePaymasterGasLimits(tokenAddr, pc.cfg.USDTAddress)
+	paymasterVerificationGasLimit, paymasterPostOpGasLimit := calculatePaymasterGasLimits(tokenAddr, pc.cfg.USDTAddress, pc.cfg.USDCAddress)
 
-	// Check quota for ETH payments only
+	// Check quota and create record only for ETH payments
 	if tokenAddr == emptyAddr {
 		estimatedWei := pc.calculateEstimatedWei(params, paymasterVerificationGasLimit, paymasterPostOpGasLimit)
 
@@ -325,6 +346,8 @@ func (pc *PaymasterController) handleGetPaymasterStubData(c *gin.Context, req ty
 			types.SendError(c, req.ID, types.InternalErrorCode, "Operation failed")
 			return
 		}
+	} else {
+		log.Debug("Token payment detected, skipping quota check and record creation", "token", tokenAddr.Hex(), "sender", params.Sender.Hex(), "nonce", params.Nonce.String())
 	}
 
 	// Generate signed paymaster data for stub
@@ -354,7 +377,7 @@ func (pc *PaymasterController) handleGetPaymasterData(c *gin.Context, req types.
 		return
 	}
 
-	paymasterVerificationGasLimit, paymasterPostOpGasLimit := calculatePaymasterGasLimits(tokenAddr, pc.cfg.USDTAddress)
+	paymasterVerificationGasLimit, paymasterPostOpGasLimit := calculatePaymasterGasLimits(tokenAddr, pc.cfg.USDTAddress, pc.cfg.USDCAddress)
 
 	// Validate paymaster related gas limits
 	if err := validateClientGasLimits(params, paymasterVerificationGasLimit, paymasterPostOpGasLimit); err != nil {
@@ -363,7 +386,7 @@ func (pc *PaymasterController) handleGetPaymasterData(c *gin.Context, req types.
 		return
 	}
 
-	// Check quota and update operation record for ETH payments only
+	// Check quota and update operation record only for ETH payments
 	if tokenAddr == emptyAddr {
 		finalWei := pc.calculateEstimatedWei(params, paymasterVerificationGasLimit, paymasterPostOpGasLimit)
 
@@ -380,6 +403,8 @@ func (pc *PaymasterController) handleGetPaymasterData(c *gin.Context, req types.
 			types.SendError(c, req.ID, types.InternalErrorCode, "Operation failed")
 			return
 		}
+	} else {
+		log.Debug("Token payment detected, skipping quota check and record creation", "token", tokenAddr.Hex(), "sender", params.Sender.Hex(), "nonce", params.Nonce.String())
 	}
 
 	// Generate signed paymaster data
@@ -542,39 +567,77 @@ func (pc *PaymasterController) parseERC7677Params(rawParams json.RawMessage) (*t
 		return nil, common.Address{}, 0, &types.RPCError{Code: types.InvalidParamsCode, Message: "Context is required"}
 	}
 
-	if context.PolicyID == nil {
-		log.Debug("Missing policy_id in context")
-		return nil, common.Address{}, 0, &types.RPCError{Code: types.InvalidParamsCode, Message: "policy_id is required in context"}
-	}
-
-	if *context.PolicyID < 0 {
-		log.Debug("Invalid policy_id", "policy_id", *context.PolicyID)
-		return nil, common.Address{}, 0, &types.RPCError{Code: types.InvalidParamsCode, Message: "Invalid policy_id. It must be a non-negative integer."}
-	}
-
-	policyID := *context.PolicyID
-
 	// Handle token address
 	tokenAddr := common.Address{}
 	if context.Token != "" {
 		tokenAddr = common.HexToAddress(context.Token)
-		if tokenAddr != emptyAddr && !strings.EqualFold(tokenAddr.Hex(), pc.cfg.USDTAddress.Hex()) {
-			log.Debug("Unsupported token", "provided", tokenAddr.Hex(), "expected", pc.cfg.USDTAddress.Hex())
-			return nil, common.Address{}, 0, &types.RPCError{Code: types.UnsupportedTokenErrorCode, Message: "Unsupported token. Only " + pc.cfg.USDTAddress.Hex() + " is supported."}
+		if tokenAddr != emptyAddr && !pc.isSupportedToken(tokenAddr) {
+			log.Debug("Unsupported token", "provided", tokenAddr.Hex(), "supported", pc.getSupportedTokensString())
+			return nil, common.Address{}, 0, &types.RPCError{
+				Code:    types.UnsupportedTokenErrorCode,
+				Message: "Unsupported token. Supported tokens: " + pc.getSupportedTokensString(),
+			}
 		}
+	}
+
+	// Policy ID validation: required only for ETH payments (empty token address)
+	var policyID int64 // Default value for token payments
+	if tokenAddr == emptyAddr {
+		// ETH payment requires policy_id
+		if context.PolicyID == nil {
+			log.Debug("Missing policy_id in context for ETH payment")
+			return nil, common.Address{}, 0, &types.RPCError{Code: types.InvalidParamsCode, Message: "policy_id is required in context for ETH payments"}
+		}
+
+		if *context.PolicyID < 0 {
+			log.Debug("Invalid policy_id", "policy_id", *context.PolicyID)
+			return nil, common.Address{}, 0, &types.RPCError{Code: types.InvalidParamsCode, Message: "Invalid policy_id. It must be a non-negative integer."}
+		}
+
+		policyID = *context.PolicyID
+	} else {
+		// Token payment: policy_id is optional, use provided value or default to 0
+		if context.PolicyID != nil {
+			if *context.PolicyID < 0 {
+				log.Debug("Invalid policy_id", "policy_id", *context.PolicyID)
+				return nil, common.Address{}, 0, &types.RPCError{Code: types.InvalidParamsCode, Message: "Invalid policy_id. It must be a non-negative integer."}
+			}
+			policyID = *context.PolicyID
+		}
+		log.Debug("Token payment detected, policy_id not required", "token", tokenAddr.Hex(), "policy_id", policyID, "sender", userOp.Sender.Hex(), "nonce", userOp.Nonce.String())
 	}
 
 	return userOp, tokenAddr, policyID, nil
 }
 
-// getETHUSDTExchangeRate fetches ETH/USDT prices from Chainlink with a 5% premium.
-func (pc *PaymasterController) getETHUSDTExchangeRate() (*big.Int, error) {
-	chainlinkPrice, err := pc.getChainlinkPrice()
-	if err != nil {
-		return nil, fmt.Errorf("failed to get Chainlink price: %w", err)
+// getTokenExchangeRate returns the exchange rate for the specified token
+func (pc *PaymasterController) getTokenExchangeRate(tokenAddr common.Address) (*big.Int, error) {
+	if tokenAddr == emptyAddr {
+		return big.NewInt(0), nil // ETH doesn't need exchange rate
 	}
 
-	log.Debug("Using Chainlink price", "price", chainlinkPrice.String())
+	if strings.EqualFold(tokenAddr.Hex(), pc.cfg.USDCAddress.Hex()) {
+		return pc.getETHUSDCExchangeRate()
+	}
+
+	if strings.EqualFold(tokenAddr.Hex(), pc.cfg.USDTAddress.Hex()) {
+		return pc.getETHUSDTExchangeRate()
+	}
+
+	return nil, fmt.Errorf("unsupported token address: %s", tokenAddr.Hex())
+}
+
+// getETHUSDTExchangeRate fetches ETH/USDT exchange rate with a 5% premium
+func (pc *PaymasterController) getETHUSDTExchangeRate() (*big.Int, error) {
+	// USDT/ETH price aggregator address
+	aggregatorAddress := "0xEe9F2375b4bdF6387aa8265dD4FB8F16512A1d46"
+
+	chainlinkPrice, err := pc.getChainlinkETHPrice(aggregatorAddress)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get Chainlink USDT price: %w", err)
+	}
+
+	log.Debug("Using Chainlink price for USDT", "price", chainlinkPrice.String())
 
 	// Apply 5% premium and convert to 6 decimals (USDT format)
 	priceWithPremium := new(big.Float).Mul(chainlinkPrice, big.NewFloat(1.05))
@@ -585,14 +648,34 @@ func (pc *PaymasterController) getETHUSDTExchangeRate() (*big.Int, error) {
 	return result, nil
 }
 
-// getChainlinkPrice fetches USDT/ETH price from Chainlink and converts to ETH/USDT
-func (pc *PaymasterController) getChainlinkPrice() (*big.Float, error) {
-	aggregatorAddress := "0xEe9F2375b4bdF6387aa8265dD4FB8F16512A1d46"
-	functionSelector := "0x50d25bcd"
+// getETHUSDCExchangeRate fetches ETH/USDC exchange rate with a 5% premium
+func (pc *PaymasterController) getETHUSDCExchangeRate() (*big.Int, error) {
+	// USDC/ETH price aggregator address
+	aggregatorAddress := "0x986b5E1e1755e3C2440e960477f25201B0a8bbD4"
+
+	chainlinkPrice, err := pc.getChainlinkETHPrice(aggregatorAddress)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get Chainlink USDC price: %w", err)
+	}
+
+	log.Debug("Using Chainlink price for USDC", "price", chainlinkPrice.String())
+
+	// Apply 5% premium and convert to 6 decimals (USDC format)
+	priceWithPremium := new(big.Float).Mul(chainlinkPrice, big.NewFloat(1.05))
+	priceWithDecimals := new(big.Float).Mul(priceWithPremium, big.NewFloat(1000000))
+	result, _ := priceWithDecimals.Int(nil)
+
+	log.Debug("Calculated Chainlink ETH/USDC price with premium", "original", chainlinkPrice.String(), "with_premium", result.String())
+	return result, nil
+}
+
+// getChainlinkETHPrice fetches ETH/Token price from Chainlink aggregator
+func (pc *PaymasterController) getChainlinkETHPrice(aggregatorAddress string) (*big.Float, error) {
+	functionSelector := "0x50d25bcd" // latestRoundData()
 
 	// Try each RPC URL
 	for i, rpcURL := range pc.cfg.EthereumRPCURLs {
-		log.Debug("Trying RPC endpoint", "index", i, "url", rpcURL)
+		log.Debug("Trying RPC endpoint for Chainlink price", "index", i, "url", rpcURL, "aggregator", aggregatorAddress)
 
 		client := &http.Client{Timeout: 2 * time.Second}
 		payload := map[string]interface{}{
@@ -610,13 +693,13 @@ func (pc *PaymasterController) getChainlinkPrice() (*big.Float, error) {
 
 		jsonData, err := json.Marshal(payload)
 		if err != nil {
-			log.Error("Failed to marshal request", "rpc", rpcURL, "error", err)
+			log.Error("Failed to marshal Chainlink request", "rpc", rpcURL, "aggregator", aggregatorAddress, "error", err)
 			continue
 		}
 
 		resp, err := client.Post(rpcURL, "application/json", bytes.NewBuffer(jsonData))
 		if err != nil {
-			log.Error("Failed to call RPC", "rpc", rpcURL, "error", err)
+			log.Error("Failed to call RPC for Chainlink price", "rpc", rpcURL, "aggregator", aggregatorAddress, "error", err)
 			continue
 		}
 
@@ -625,7 +708,7 @@ func (pc *PaymasterController) getChainlinkPrice() (*big.Float, error) {
 			log.Warn("Failed to close response body", "rpc", rpcURL, "error", closeErr)
 		}
 		if err != nil {
-			log.Error("Failed to read response", "rpc", rpcURL, "error", err)
+			log.Error("Failed to read Chainlink response", "rpc", rpcURL, "aggregator", aggregatorAddress, "error", err)
 			continue
 		}
 
@@ -637,44 +720,44 @@ func (pc *PaymasterController) getChainlinkPrice() (*big.Float, error) {
 		}
 
 		if err = json.Unmarshal(body, &rpcResponse); err != nil {
-			log.Error("Failed to parse response", "rpc", rpcURL, "error", err)
+			log.Error("Failed to parse Chainlink response", "rpc", rpcURL, "aggregator", aggregatorAddress, "error", err)
 			continue
 		}
 
 		if rpcResponse.Error != nil {
-			log.Error("RPC error", "rpc", rpcURL, "error", rpcResponse.Error.Message)
+			log.Error("Chainlink RPC error", "rpc", rpcURL, "aggregator", aggregatorAddress, "error", rpcResponse.Error.Message)
 			continue
 		}
 
 		if len(rpcResponse.Result) < 66 {
-			log.Error("Invalid response", "rpc", rpcURL, "result", rpcResponse.Result)
+			log.Error("Invalid Chainlink response", "rpc", rpcURL, "aggregator", aggregatorAddress, "result", rpcResponse.Result)
 			continue
 		}
 
-		// Parse answer
+		// Parse answer (Token/ETH price with 18 decimals)
 		answerHex := rpcResponse.Result[2:]
 		answer, ok := new(big.Int).SetString(answerHex, 16)
 		if !ok || answer.Sign() <= 0 {
-			log.Error("Invalid answer", "rpc", rpcURL, "hex", answerHex)
+			log.Error("Invalid Chainlink answer", "rpc", rpcURL, "aggregator", aggregatorAddress, "hex", answerHex)
 			continue
 		}
 
-		// Convert USDT/ETH to ETH/USDT
-		usdtPerEth := new(big.Float).SetInt(answer)
+		// Convert Token/ETH to ETH/Token
+		tokenPerEth := new(big.Float).SetInt(answer)
 		divisor := new(big.Float).SetInt(new(big.Int).Exp(big.NewInt(10), big.NewInt(18), nil))
-		usdtPerEth.Quo(usdtPerEth, divisor)
+		tokenPerEth.Quo(tokenPerEth, divisor)
 
-		if usdtPerEth.Sign() <= 0 {
-			log.Error("Invalid price", "rpc", rpcURL, "price", usdtPerEth.String())
+		if tokenPerEth.Sign() <= 0 {
+			log.Error("Invalid token price", "rpc", rpcURL, "aggregator", aggregatorAddress, "price", tokenPerEth.String())
 			continue
 		}
 
-		ethPerUsdt := new(big.Float).Quo(big.NewFloat(1.0), usdtPerEth)
-		log.Debug("Got Chainlink price", "rpc", rpcURL, "eth_usdt", ethPerUsdt.String())
-		return ethPerUsdt, nil
+		ethPerToken := new(big.Float).Quo(big.NewFloat(1.0), tokenPerEth)
+		log.Debug("Got Chainlink price", "rpc", rpcURL, "aggregator", aggregatorAddress, "eth_per_token", ethPerToken.String())
+		return ethPerToken, nil
 	}
 
-	return nil, fmt.Errorf("all RPC endpoints failed")
+	return nil, fmt.Errorf("all RPC endpoints failed for aggregator %s", aggregatorAddress)
 }
 
 // buildAndSignPaymasterData builds and signs paymaster data
@@ -692,17 +775,17 @@ func (pc *PaymasterController) buildAndSignPaymasterData(userOp *types.Paymaster
 	// Configuration flags
 	allowAnyBundler := true
 	precheckBalance := true
-	prepaymentRequired := false
+	prepaymentRequired := true
 
 	// Set default values for ETH
 	exchangeRate := big.NewInt(0) // Zero for ETH
 
-	// If using USDT token
-	if tokenAddr != emptyAddr && strings.EqualFold(tokenAddr.Hex(), pc.cfg.USDTAddress.Hex()) {
+	// If using token
+	if tokenAddr != emptyAddr {
 		var err error
-		exchangeRate, err = pc.getETHUSDTExchangeRate() // Get exchange rate with 5% premium
+		exchangeRate, err = pc.getTokenExchangeRate(tokenAddr)
 		if err != nil {
-			return "", fmt.Errorf("failed to get ETH/USDT exchange rate: %w", err)
+			return "", fmt.Errorf("failed to get exchange rate for token %s: %w", tokenAddr.Hex(), err)
 		}
 	}
 
@@ -828,10 +911,15 @@ func (pc *PaymasterController) getPaymasterDataHash(userOp *types.PaymasterUserO
 ) []byte {
 	var buffer []byte
 
-	// UserOp fields (8 * 32 bytes)
 	buffer = append(buffer, common.LeftPadBytes(userOp.Sender.Bytes(), 32)...)
 	buffer = append(buffer, common.LeftPadBytes(userOp.Nonce.ToInt().Bytes(), 32)...)
-	buffer = append(buffer, crypto.Keccak256Hash(common.FromHex(userOp.InitCode)).Bytes()...)
+
+	var initCode []byte
+	if userOp.Factory != nil {
+		initCode = append(userOp.Factory.Bytes(), common.FromHex(userOp.FactoryData)...)
+	}
+	buffer = append(buffer, crypto.Keccak256Hash(initCode).Bytes()...)
+
 	buffer = append(buffer, crypto.Keccak256Hash(common.FromHex(userOp.CallData)).Bytes()...)
 
 	gasLimits := packGasLimits(userOp.VerificationGasLimit.ToInt(), userOp.CallGasLimit.ToInt())
@@ -839,13 +927,12 @@ func (pc *PaymasterController) getPaymasterDataHash(userOp *types.PaymasterUserO
 
 	buffer = append(buffer, common.LeftPadBytes(userOp.PreVerificationGas.ToInt().Bytes(), 32)...)
 
-	gasFees := packGasLimits(userOp.MaxFeePerGas.ToInt(), userOp.MaxPriorityFeePerGas.ToInt())
+	gasFees := packGasLimits(userOp.MaxPriorityFeePerGas.ToInt(), userOp.MaxFeePerGas.ToInt())
 	buffer = append(buffer, gasFees[:]...)
 
 	buffer = append(buffer, common.LeftPadBytes(big.NewInt(pc.cfg.ChainID).Bytes(), 32)...)
 	buffer = append(buffer, common.LeftPadBytes(pc.cfg.PaymasterAddressV7.Bytes(), 32)...)
 
-	// PaymasterData fields (10 * 32 bytes)
 	buffer = append(buffer, common.LeftPadBytes(validUntil.Bytes(), 32)...)
 	buffer = append(buffer, common.LeftPadBytes(validAfter.Bytes(), 32)...)
 	buffer = append(buffer, common.LeftPadBytes(sponsorUUID.Bytes(), 32)...)
@@ -881,11 +968,6 @@ func (pc *PaymasterController) getPaymasterDataHash(userOp *types.PaymasterUserO
 	return crypto.Keccak256(buffer)
 }
 
-func packGasLimits(high, low *big.Int) [32]byte {
-	combined := new(big.Int).Or(new(big.Int).Lsh(high, 128), low)
-	return [32]byte(common.LeftPadBytes(combined.Bytes(), 32))
-}
-
 // signHash signs a hash using either private key or AWS KMS
 func (pc *PaymasterController) signHash(hash []byte) ([]byte, error) {
 	if len(hash) != 32 {
@@ -904,17 +986,33 @@ func (pc *PaymasterController) signHash(hash []byte) ([]byte, error) {
 	return pc.signHashWithKMS(ethSignedHash)
 }
 
+var max128Bit = new(big.Int).Sub(new(big.Int).Lsh(big.NewInt(1), 128), big.NewInt(1))
+
+func packGasLimits(high, low *big.Int) [32]byte {
+	if high.Cmp(max128Bit) > 0 || low.Cmp(max128Bit) > 0 {
+		panic("value exceeds 128 bits")
+	}
+	if high.Sign() < 0 || low.Sign() < 0 {
+		panic("value cannot be negative")
+	}
+
+	combined := new(big.Int).Or(new(big.Int).Lsh(high, 128), low)
+	return [32]byte(common.LeftPadBytes(combined.Bytes(), 32))
+}
+
 // calculatePaymasterGasLimits calculates the gas limits for paymaster operations based on the token address.
 // The token address is either the zero address for ETH or the USDT address, validated before calling this function.
-func calculatePaymasterGasLimits(tokenAddr common.Address, usdtAddress common.Address) (*big.Int, *big.Int) {
+func calculatePaymasterGasLimits(tokenAddr common.Address, usdtAddress common.Address, usdcAddress common.Address) (*big.Int, *big.Int) {
 	// Set default values for ETH
 	paymasterPostOpGasLimit := big.NewInt(5000)
 	paymasterVerificationGasLimit := big.NewInt(25000)
 
 	// If using USDT token
-	if tokenAddr != emptyAddr && strings.EqualFold(tokenAddr.Hex(), usdtAddress.Hex()) {
-		paymasterPostOpGasLimit = big.NewInt(42000)
-		paymasterVerificationGasLimit = big.NewInt(30000)
+	if tokenAddr != emptyAddr {
+		if strings.EqualFold(tokenAddr.Hex(), usdtAddress.Hex()) || strings.EqualFold(tokenAddr.Hex(), usdcAddress.Hex()) {
+			paymasterPostOpGasLimit = big.NewInt(42000)
+			paymasterVerificationGasLimit = big.NewInt(35000)
+		}
 	}
 
 	return paymasterVerificationGasLimit, paymasterPostOpGasLimit
@@ -944,4 +1042,20 @@ func validateClientGasLimits(userOp *types.PaymasterUserOperationV7,
 	}
 
 	return nil
+}
+
+// isSupportedToken checks if the token address is supported
+func (pc *PaymasterController) isSupportedToken(tokenAddr common.Address) bool {
+	if tokenAddr == emptyAddr {
+		return true // ETH
+	}
+	return strings.EqualFold(tokenAddr.Hex(), pc.cfg.USDTAddress.Hex()) ||
+		strings.EqualFold(tokenAddr.Hex(), pc.cfg.USDCAddress.Hex())
+}
+
+// getSupportedTokensString returns a string listing all supported tokens
+func (pc *PaymasterController) getSupportedTokensString() string {
+	return fmt.Sprintf("ETH, %s (USDT), %s (USDC)",
+		pc.cfg.USDTAddress.Hex(),
+		pc.cfg.USDCAddress.Hex())
 }
