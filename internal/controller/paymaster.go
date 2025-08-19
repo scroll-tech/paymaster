@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"math/big"
+	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -142,15 +143,25 @@ func (pc *PaymasterController) initializeKMSSigner(keyID string) error {
 		return fmt.Errorf("failed to load AWS config: %w", err)
 	}
 
+	// Set HTTP client timeouts
+	cfg.HTTPClient = &http.Client{
+		Timeout: 5 * time.Second,
+		Transport: &http.Transport{
+			DialContext: (&net.Dialer{
+				Timeout:   2 * time.Second,
+				KeepAlive: 30 * time.Second,
+			}).DialContext,
+			TLSHandshakeTimeout:   2 * time.Second,
+			ResponseHeaderTimeout: 3 * time.Second,
+		},
+	}
+
 	// Create KMS client
 	pc.kmsClient = kms.NewFromConfig(cfg)
 	pc.awsKMSKeyID = keyID
 
 	// Get public key to derive address
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	pubkey, err := pc.getPubKeyFromKMS(ctx, keyID)
+	pubkey, err := pc.getPubKeyFromKMS(context.Background(), keyID)
 	if err != nil {
 		return fmt.Errorf("failed to get public key from KMS: %w", err)
 	}
@@ -192,18 +203,15 @@ func (pc *PaymasterController) getPubKeyFromKMS(ctx context.Context, keyID strin
 
 // signHashWithKMS signs a hash using AWS KMS
 func (pc *PaymasterController) signHashWithKMS(hash []byte) ([]byte, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
 	// Get the expected public key bytes for signature verification
-	pubkey, err := pc.getPubKeyFromKMS(ctx, pc.awsKMSKeyID)
+	pubkey, err := pc.getPubKeyFromKMS(context.Background(), pc.awsKMSKeyID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get public key: %w", err)
 	}
 	pubKeyBytes := secp256k1.S256().Marshal(pubkey.X, pubkey.Y)
 
 	// Get R and S values from KMS signature
-	rBytes, sBytes, err := pc.getSignatureFromKMS(ctx, hash)
+	rBytes, sBytes, err := pc.getSignatureFromKMS(context.Background(), hash)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get signature from KMS: %w", err)
 	}
