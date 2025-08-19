@@ -18,6 +18,7 @@ type Config struct {
 	RateLimiterQPS     int64           `json:"rate_limiter_qps"`
 	ChainID            int64           `json:"chain_id"`
 	SignerPrivateKey   string          `json:"signer_private_key"`
+	AWSKMSKeyID        string          `json:"aws_kms_key_id"` // FIXME: AWS KMS signer is not tested yet.
 	USDTAddress        common.Address  `json:"usdt_address"`
 	USDCAddress        common.Address  `json:"usdc_address"`
 	EthereumRPCURLs    []string        `json:"ethereum_rpc_urls"`

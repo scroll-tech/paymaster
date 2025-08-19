@@ -5,18 +5,25 @@ import (
 	"bytes"
 	"context"
 	"crypto/ecdsa"
+	"encoding/asn1"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"math/big"
+	"net"
 	"net/http"
 	"strings"
 	"time"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
+	awsConfig "github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/service/kms"
+	awsTypes "github.com/aws/aws-sdk-go-v2/service/kms/types"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/crypto"
+	"github.com/ethereum/go-ethereum/crypto/secp256k1"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
@@ -28,12 +35,22 @@ import (
 
 const entryPointV7Address = "0x0000000071727De22E5E9d8BAf0edAc6f37da032"
 
-var emptyAddr = common.Address{}
+var (
+	emptyAddr      = common.Address{}
+	secp256k1N     = crypto.S256().Params().N
+	secp256k1HalfN = new(big.Int).Div(secp256k1N, big.NewInt(2))
+)
 
 // PaymasterController the controller of paymaster
 type PaymasterController struct {
-	cfg              *config.Config
-	signerKey        *ecdsa.PrivateKey
+	cfg           *config.Config
+	signerKey     *ecdsa.PrivateKey
+	signerAddress common.Address
+
+	awsKMSKeyID    string
+	kmsClient      *kms.Client
+	kmsPubKeyBytes []byte
+
 	policyOrm        *orm.Policy
 	userOperationOrm *orm.UserOperation
 }
@@ -44,30 +61,259 @@ func NewPaymasterController(cfg *config.Config, db *gorm.DB) *PaymasterControlle
 		log.Crit("API keys are required")
 	}
 
-	// Handle private key with or without 0x prefix
-	privateKeyStr := cfg.SignerPrivateKey
-	if strings.HasPrefix(privateKeyStr, "0x") || strings.HasPrefix(privateKeyStr, "0X") {
-		privateKeyStr = privateKeyStr[2:]
+	pc := &PaymasterController{
+		cfg:              cfg,
+		policyOrm:        orm.NewPolicy(db),
+		userOperationOrm: orm.NewUserOperation(db),
 	}
 
-	privateKeyBytes, err := hex.DecodeString(privateKeyStr)
+	// Check mutually exclusive signer configuration
+	hasPrivateKey := cfg.SignerPrivateKey != ""
+	hasKMSKey := cfg.AWSKMSKeyID != ""
+
+	if !hasPrivateKey && !hasKMSKey {
+		log.Crit("Either signer private key or AWS KMS key ID must be provided")
+	}
+
+	if hasPrivateKey && hasKMSKey {
+		log.Crit("Cannot specify both signer private key and AWS KMS key ID")
+	}
+
+	if hasPrivateKey {
+		// Initialize with private key
+		if err := pc.initializePrivateKeySigner(cfg.SignerPrivateKey); err != nil {
+			log.Crit("Failed to initialize private key signer", "error", err)
+		}
+		log.Info("Paymaster signer initialized with private key", "address", pc.signerAddress.Hex())
+	} else {
+		// Initialize with AWS KMS
+		// FIXME: AWS KMS signer is not tested yet.
+		if err := pc.initializeKMSSigner(cfg.AWSKMSKeyID); err != nil {
+			log.Crit("Failed to initialize KMS signer", "error", err)
+		}
+		log.Info("Paymaster signer initialized with AWS KMS", "address", pc.signerAddress.Hex(), "key_id", cfg.AWSKMSKeyID)
+	}
+
+	return pc
+}
+
+// initializePrivateKeySigner initializes the signer with a private key
+func (pc *PaymasterController) initializePrivateKeySigner(privateKeyHex string) error {
+	// Validate input
+	if privateKeyHex == "" {
+		return fmt.Errorf("private key cannot be empty")
+	}
+
+	// Handle private key with or without 0x prefix
+	if strings.HasPrefix(privateKeyHex, "0x") || strings.HasPrefix(privateKeyHex, "0X") {
+		privateKeyHex = privateKeyHex[2:]
+	}
+
+	// Validate hex string length (64 characters for 32 bytes)
+	if len(privateKeyHex) != 64 {
+		return fmt.Errorf("invalid private key length: expected 64 hex characters, got %d", len(privateKeyHex))
+	}
+
+	privateKeyBytes, err := hex.DecodeString(privateKeyHex)
 	if err != nil {
-		log.Crit("Failed to decode private key", "error", err)
+		return fmt.Errorf("failed to decode private key: %w", err)
 	}
 
 	signerKey, err := crypto.ToECDSA(privateKeyBytes)
 	if err != nil {
-		log.Crit("Failed to create ECDSA key from private key", "error", err)
+		return fmt.Errorf("failed to create ECDSA key from private key: %w", err)
 	}
 
-	log.Info("Paymaster signer initialized", "address", crypto.PubkeyToAddress(signerKey.PublicKey).Hex())
+	pc.signerKey = signerKey
+	pc.signerAddress = crypto.PubkeyToAddress(signerKey.PublicKey)
 
-	return &PaymasterController{
-		cfg:              cfg,
-		signerKey:        signerKey,
-		policyOrm:        orm.NewPolicy(db),
-		userOperationOrm: orm.NewUserOperation(db),
+	// Clear sensitive data from memory
+	for i := range privateKeyBytes {
+		privateKeyBytes[i] = 0
 	}
+
+	return nil
+}
+
+// initializeKMSSigner initializes the signer with AWS KMS
+// FIXME: AWS KMS signer is not tested yet.
+func (pc *PaymasterController) initializeKMSSigner(keyID string) error {
+	// Load AWS configuration
+	cfg, err := awsConfig.LoadDefaultConfig(context.Background())
+	if err != nil {
+		return fmt.Errorf("failed to load AWS config: %w", err)
+	}
+
+	// Set HTTP client timeouts
+	cfg.HTTPClient = &http.Client{
+		Timeout: 5 * time.Second,
+		Transport: &http.Transport{
+			DialContext: (&net.Dialer{
+				Timeout:   2 * time.Second,
+				KeepAlive: 30 * time.Second,
+			}).DialContext,
+			TLSHandshakeTimeout:   2 * time.Second,
+			ResponseHeaderTimeout: 3 * time.Second,
+		},
+	}
+
+	// Create KMS client
+	pc.kmsClient = kms.NewFromConfig(cfg)
+	pc.awsKMSKeyID = keyID
+
+	// Get public key to derive address
+	pubkey, err := pc.getPubKeyFromKMS(context.Background(), keyID)
+	if err != nil {
+		return fmt.Errorf("failed to get public key from KMS: %w", err)
+	}
+
+	pc.kmsPubKeyBytes = secp256k1.S256().Marshal(pubkey.X, pubkey.Y)
+	pc.signerAddress = crypto.PubkeyToAddress(*pubkey)
+	return nil
+}
+
+// getPubKeyFromKMS gets public key from KMS
+func (pc *PaymasterController) getPubKeyFromKMS(ctx context.Context, keyID string) (*ecdsa.PublicKey, error) {
+	getPubKeyOutput, err := pc.kmsClient.GetPublicKey(ctx, &kms.GetPublicKeyInput{
+		KeyId: aws.String(keyID),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("cannot get public key from KMS for KeyId=%s: %w", keyID, err)
+	}
+
+	// Parse ASN.1 DER encoded public key
+	var asn1pubk struct {
+		EcPublicKeyInfo struct {
+			Algorithm  asn1.ObjectIdentifier
+			Parameters asn1.ObjectIdentifier
+		}
+		PublicKey asn1.BitString
+	}
+
+	_, err = asn1.Unmarshal(getPubKeyOutput.PublicKey, &asn1pubk)
+	if err != nil {
+		return nil, fmt.Errorf("cannot parse ASN.1 public key for KeyId=%s: %w", keyID, err)
+	}
+
+	pubkey, err := crypto.UnmarshalPubkey(asn1pubk.PublicKey.Bytes)
+	if err != nil {
+		return nil, fmt.Errorf("cannot construct secp256k1 public key from key bytes: %w", err)
+	}
+
+	return pubkey, nil
+}
+
+// signHashWithKMS signs a hash using AWS KMS
+func (pc *PaymasterController) signHashWithKMS(hash []byte) ([]byte, error) {
+	// Get the expected public key bytes for signature verification
+	if pc.kmsPubKeyBytes == nil {
+		return nil, fmt.Errorf("KMS public key not initialized")
+	}
+
+	// Get R and S values from KMS signature
+	rBytes, sBytes, err := pc.getSignatureFromKMS(context.Background(), hash)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get signature from KMS: %w", err)
+	}
+
+	// Adjust S value according to Ethereum standard
+	sBigInt := new(big.Int).SetBytes(sBytes)
+	if sBigInt.Cmp(secp256k1HalfN) > 0 {
+		sBytes = new(big.Int).Sub(secp256k1N, sBigInt).Bytes()
+	}
+
+	// Get Ethereum signature with correct recovery ID
+	signature, err := pc.getEthereumSignature(pc.kmsPubKeyBytes, hash, rBytes, sBytes)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get Ethereum signature: %w", err)
+	}
+
+	return signature, nil
+}
+
+// getSignatureFromKMS gets R and S values from KMS
+func (pc *PaymasterController) getSignatureFromKMS(ctx context.Context, hash []byte) ([]byte, []byte, error) {
+	signInput := &kms.SignInput{
+		KeyId:            aws.String(pc.awsKMSKeyID),
+		SigningAlgorithm: awsTypes.SigningAlgorithmSpecEcdsaSha256,
+		MessageType:      awsTypes.MessageTypeDigest,
+		Message:          hash,
+	}
+
+	signOutput, err := pc.kmsClient.Sign(ctx, signInput)
+	if err != nil {
+		return nil, nil, fmt.Errorf("KMS sign failed: %w", err)
+	}
+
+	// Parse ASN.1 signature
+	var sigAsn1 struct {
+		R asn1.RawValue
+		S asn1.RawValue
+	}
+
+	_, err = asn1.Unmarshal(signOutput.Signature, &sigAsn1)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to unmarshal ASN.1 signature: %w", err)
+	}
+
+	return sigAsn1.R.Bytes, sigAsn1.S.Bytes, nil
+}
+
+// getEthereumSignature creates Ethereum signature with recovery ID
+func (pc *PaymasterController) getEthereumSignature(expectedPublicKeyBytes []byte, hash []byte, r []byte, s []byte) ([]byte, error) {
+	rsSignature := append(pc.adjustSignatureLength(r), pc.adjustSignatureLength(s)...)
+
+	// Try recovery ID 0
+	signature := append(rsSignature, []byte{0}...)
+	recoveredPublicKeyBytes, err := crypto.Ecrecover(hash, signature)
+	if err != nil {
+		return nil, fmt.Errorf("recovery with ID 0 failed: %w", err)
+	}
+
+	if hex.EncodeToString(recoveredPublicKeyBytes) == hex.EncodeToString(expectedPublicKeyBytes) {
+		return signature, nil
+	}
+
+	// Try recovery ID 1
+	signature = append(rsSignature, []byte{1}...)
+	recoveredPublicKeyBytes, err = crypto.Ecrecover(hash, signature)
+	if err != nil {
+		return nil, fmt.Errorf("recovery with ID 1 failed: %w", err)
+	}
+
+	if hex.EncodeToString(recoveredPublicKeyBytes) == hex.EncodeToString(expectedPublicKeyBytes) {
+		return signature, nil
+	}
+
+	return nil, fmt.Errorf("cannot reconstruct public key from signature")
+}
+
+// adjustSignatureLength adjusts signature component length
+func (pc *PaymasterController) adjustSignatureLength(buffer []byte) []byte {
+	buffer = bytes.TrimLeft(buffer, "\x00")
+	for len(buffer) < 32 {
+		zeroBuf := []byte{0}
+		buffer = append(zeroBuf, buffer...)
+	}
+	return buffer
+}
+
+// signHashWithPrivateKey signs a hash using the private key
+func (pc *PaymasterController) signHashWithPrivateKey(hash []byte) ([]byte, error) {
+	signature, err := crypto.Sign(hash, pc.signerKey)
+	if err != nil {
+		return nil, fmt.Errorf("failed to sign with private key: %w", err)
+	}
+
+	if len(signature) != 65 {
+		return nil, fmt.Errorf("invalid signature length: got %d, expected 65", len(signature))
+	}
+
+	if signature[64] == 0 || signature[64] == 1 {
+		signature[64] += 27
+	}
+
+	return signature, nil
 }
 
 // handlePaymasterMethod handles JSON-RPC requests for paymaster methods.
@@ -732,6 +978,7 @@ func (pc *PaymasterController) getPaymasterDataHash(userOp *types.PaymasterUserO
 	return crypto.Keccak256(buffer)
 }
 
+// signHash signs a hash using either private key or AWS KMS
 func (pc *PaymasterController) signHash(hash []byte) ([]byte, error) {
 	if len(hash) != 32 {
 		return nil, fmt.Errorf("hash must be 32 bytes, got %d", len(hash))
@@ -741,20 +988,11 @@ func (pc *PaymasterController) signHash(hash []byte) ([]byte, error) {
 	fullMessage := append([]byte(prefix), hash...)
 	ethSignedHash := crypto.Keccak256(fullMessage)
 
-	signature, err := crypto.Sign(ethSignedHash, pc.signerKey)
-	if err != nil {
-		return nil, err
+	if pc.signerKey != nil {
+		return pc.signHashWithPrivateKey(ethSignedHash)
 	}
 
-	if len(signature) != 65 {
-		return nil, fmt.Errorf("invalid signature length: got %d, expected 65", len(signature))
-	}
-
-	if signature[64] == 0 || signature[64] == 1 {
-		signature[64] += 27
-	}
-
-	return signature, nil
+	return pc.signHashWithKMS(ethSignedHash)
 }
 
 var max128Bit = new(big.Int).Sub(new(big.Int).Lsh(big.NewInt(1), 128), big.NewInt(1))
