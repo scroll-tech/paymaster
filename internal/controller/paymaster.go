@@ -47,8 +47,9 @@ type PaymasterController struct {
 	signerKey     *ecdsa.PrivateKey
 	signerAddress common.Address
 
-	awsKMSKeyID string
-	kmsClient   *kms.Client
+	awsKMSKeyID    string
+	kmsClient      *kms.Client
+	kmsPubKeyBytes []byte
 
 	policyOrm        *orm.Policy
 	userOperationOrm *orm.UserOperation
@@ -166,6 +167,7 @@ func (pc *PaymasterController) initializeKMSSigner(keyID string) error {
 		return fmt.Errorf("failed to get public key from KMS: %w", err)
 	}
 
+	pc.kmsPubKeyBytes = secp256k1.S256().Marshal(pubkey.X, pubkey.Y)
 	pc.signerAddress = crypto.PubkeyToAddress(*pubkey)
 	return nil
 }
@@ -204,11 +206,9 @@ func (pc *PaymasterController) getPubKeyFromKMS(ctx context.Context, keyID strin
 // signHashWithKMS signs a hash using AWS KMS
 func (pc *PaymasterController) signHashWithKMS(hash []byte) ([]byte, error) {
 	// Get the expected public key bytes for signature verification
-	pubkey, err := pc.getPubKeyFromKMS(context.Background(), pc.awsKMSKeyID)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get public key: %w", err)
+	if pc.kmsPubKeyBytes == nil {
+		return nil, fmt.Errorf("KMS public key not initialized")
 	}
-	pubKeyBytes := secp256k1.S256().Marshal(pubkey.X, pubkey.Y)
 
 	// Get R and S values from KMS signature
 	rBytes, sBytes, err := pc.getSignatureFromKMS(context.Background(), hash)
@@ -223,7 +223,7 @@ func (pc *PaymasterController) signHashWithKMS(hash []byte) ([]byte, error) {
 	}
 
 	// Get Ethereum signature with correct recovery ID
-	signature, err := pc.getEthereumSignature(pubKeyBytes, hash, rBytes, sBytes)
+	signature, err := pc.getEthereumSignature(pc.kmsPubKeyBytes, hash, rBytes, sBytes)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get Ethereum signature: %w", err)
 	}
