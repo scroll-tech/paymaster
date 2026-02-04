@@ -1,0 +1,5 @@
+@openzeppelin/contracts/=lib/openzeppelin-contracts/contracts
+@account-abstraction/=lib/account-abstraction/contracts
+@solady/=lib/solady/src
+@verifying-paymaster/=lib/verifying-paymaster/src
+forge-std/=lib/forge-std/src
